@@ -146,7 +146,8 @@ curl -s -X POST http://localhost:9090/admin/v1/keys \
 ```
 
 Key and tenant quotas are enforced together. `null`/missing means unlimited. `0`
-is rejected; use `null` to remove a limit.
+is rejected; use `null` to remove a limit. `monthly_cost_usd` may be fractional
+(for example `0.000001`).
 
 ### Provider
 

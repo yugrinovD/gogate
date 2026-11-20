@@ -557,7 +557,7 @@ components:
         tpm: {type: [integer, 'null'], minimum: 1}
         daily_requests: {type: [integer, 'null'], minimum: 1}
         daily_tokens: {type: [integer, 'null'], minimum: 1}
-        monthly_cost_usd: {type: [number, 'null'], minimum: 1}
+        monthly_cost_usd: {type: [number, 'null'], exclusiveMinimum: 0}
     QuotaInput:
       type: object
       required: [tenant_id]
@@ -568,7 +568,7 @@ components:
         tpm: {type: [integer, 'null'], minimum: 1}
         daily_requests: {type: [integer, 'null'], minimum: 1}
         daily_tokens: {type: [integer, 'null'], minimum: 1}
-        monthly_cost_usd: {type: [number, 'null'], minimum: 1}
+        monthly_cost_usd: {type: [number, 'null'], exclusiveMinimum: 0}
     ModelPrice:
       type: object
       properties:
