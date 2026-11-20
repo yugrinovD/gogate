@@ -2,7 +2,7 @@
 bin/
 build/
 dist/
-gogate
+/gogate
 
 # Local configuration and secrets
 .env

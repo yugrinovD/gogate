@@ -402,6 +402,7 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, start time.Time
 	usageSent := false
 	errCode := ""
 	writeFailed := false
+	finalWritten := false
 	respID := ""
 	model := req.Model
 	created := time.Now().Unix()
@@ -411,10 +412,12 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, start time.Time
 		if ctxErr := r.Context().Err(); ctxErr != nil {
 			if errors.Is(ctxErr, context.DeadlineExceeded) {
 				errCode = "timeout"
+				writeTimeoutFinal(w, rc)
+				finalWritten = true
 			} else {
 				errCode = "client_canceled"
+				writeFailed = true
 			}
-			writeFailed = true
 			break
 		}
 		chunk, err := sess.Next(r.Context())
@@ -429,7 +432,11 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, start time.Time
 			if h.metrics != nil {
 				h.metrics.IncUpstreamError(sess.Provider(), errCode)
 			}
-			if r.Context().Err() == nil {
+			if errors.Is(r.Context().Err(), context.DeadlineExceeded) {
+				errCode = "timeout"
+				writeTimeoutFinal(w, rc)
+				finalWritten = true
+			} else if r.Context().Err() == nil {
 				if werr := writeSSEError(w, "upstream response failed"); werr != nil {
 					writeFailed = true
 				}
@@ -496,7 +503,7 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, start time.Time
 	if respID == "" {
 		respID = newCompletionID()
 	}
-	if !writeFailed && includeUsage && !usageSent {
+	if !writeFailed && !finalWritten && includeUsage && !usageSent {
 		if usage == nil {
 			u := totalUsage(tokenest.Prompt(preq.Messages), tokenest.Response(content.String()))
 			usage = &u
@@ -506,7 +513,7 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, start time.Time
 			writeFailed = true
 		}
 	}
-	if !writeFailed {
+	if !writeFailed && !finalWritten {
 		if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
 			writeFailed = true
 		} else if err := rc.Flush(); err != nil {
@@ -651,7 +658,11 @@ func writeSSE(w io.Writer, v any) error {
 }
 
 func writeSSEError(w io.Writer, message string) error {
-	body, _ := json.Marshal(apierr.Envelope{Error: apierr.Error{Message: message, Type: "upstream_error", Code: "upstream_stream_error"}})
+	return writeSSEErrorCode(w, message, "upstream_stream_error")
+}
+
+func writeSSEErrorCode(w io.Writer, message, code string) error {
+	body, _ := json.Marshal(apierr.Envelope{Error: apierr.Error{Message: message, Type: "upstream_error", Code: code}})
 	if _, err := w.Write([]byte("data: ")); err != nil {
 		return err
 	}
@@ -660,6 +671,17 @@ func writeSSEError(w io.Writer, message string) error {
 	}
 	_, err := io.WriteString(w, "\n\n")
 	return err
+}
+
+func writeTimeoutFinal(w io.Writer, rc *http.ResponseController) {
+	if rc != nil {
+		_ = rc.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	}
+	_ = writeSSEErrorCode(w, "request timeout", "request_timeout")
+	_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	if rc != nil {
+		_ = rc.Flush()
+	}
 }
 
 func newCompletionID() string {

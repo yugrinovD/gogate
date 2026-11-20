@@ -23,7 +23,7 @@ func PublishReload(ctx context.Context, rdb *redis.Client) error {
 // eventually reach every replica even without pub/sub.
 func PeriodicReload(ctx context.Context, manager *Manager, interval time.Duration, log *slog.Logger) {
 	if interval <= 0 {
-		interval = 30 * time.Second
+		return
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

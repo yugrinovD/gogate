@@ -32,6 +32,30 @@ func ValidateUpstreamURLSyntax(raw string) error {
 	return nil
 }
 
+// ValidateUpstreamURLStatic applies offline policy: syntax, metadata hostnames,
+// and IP-literal private/loopback checks. Hostnames are not resolved to keep
+// control-plane reloads independent of DNS.
+func ValidateUpstreamURLStatic(raw string, allowPrivate bool) error {
+	if err := ValidateUpstreamURLSyntax(raw); err != nil {
+		return err
+	}
+	u, _ := url.Parse(raw)
+	host := u.Hostname()
+	if strings.EqualFold(host, "metadata.google.internal") || strings.EqualFold(host, "metadata") {
+		return fmt.Errorf("metadata host is not allowed")
+	}
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+		if !allowPrivate {
+			return fmt.Errorf("private upstream address %s is not allowed", host)
+		}
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return validateIP(ip, allowPrivate)
+	}
+	return nil
+}
+
 // ValidateUpstreamHost resolves a host and rejects metadata, link-local,
 // multicast and (unless explicitly allowed) private/loopback addresses.
 func ValidateUpstreamHost(raw string, allowPrivate bool) error {

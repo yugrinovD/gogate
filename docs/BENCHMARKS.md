@@ -34,19 +34,19 @@ requests: 30 001
 rps:      500.0
 errors:   0%
 p50:      0.44 ms
-p95:      0.56 ms
-p99:      0.82 ms
-max:      7.35 ms
+p95:      0.54 ms
+p99:      0.75 ms
+max:      56.8 ms
 ```
 
 ## Baseline и overhead
 
 | Сценарий | p50 | p95 | p99 | max |
 | --- | --- | --- | --- | --- |
-| gogate (500 RPS, 60s) | 0.44 ms | 0.56 ms | 0.82 ms | 7.35 ms |
+| gogate (500 RPS, 60s) | 0.44 ms | 0.54 ms | 0.75 ms | 56.8 ms |
 | mock-upstream напрямую (500 RPS, 30s) | 0.12 ms | 0.15 ms | 0.21 ms | 30.7 ms |
 
-Overhead p99 ≈ **0.62 ms**, что существенно ниже цели в 50 ms. Max включает
+Overhead p99 ≈ **0.54 ms**, что существенно ниже цели в 50 ms. Max включает
 редкие выбросы планировщика/GC и не является типичной latency.
 
 ## Память

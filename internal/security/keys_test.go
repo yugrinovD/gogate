@@ -73,3 +73,17 @@ func TestValidateEnvName(t *testing.T) {
 		}
 	}
 }
+
+func TestMinKeyBytes(t *testing.T) {
+	dev := MinKeyBytes("dev")
+	if dev != 84 {
+		t.Fatalf("dev min=%d", dev)
+	}
+	mat, err := GenerateKey("dev", "pepper-value-at-least-16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mat.Plaintext) < dev {
+		t.Fatalf("generated key is shorter than minimum: %d < %d", len(mat.Plaintext), dev)
+	}
+}

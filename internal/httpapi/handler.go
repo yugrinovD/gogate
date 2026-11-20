@@ -12,6 +12,7 @@ import (
 	"github.com/yugrinovD/gogate/internal/config"
 	"github.com/yugrinovD/gogate/internal/control"
 	"github.com/yugrinovD/gogate/internal/cost"
+	"github.com/yugrinovD/gogate/internal/logging"
 	"github.com/yugrinovD/gogate/internal/observability"
 	"github.com/yugrinovD/gogate/internal/orchestrator"
 	"github.com/yugrinovD/gogate/internal/provider"
@@ -213,7 +214,7 @@ func (h *Handler) finish(r *http.Request, o outcome) {
 			})
 		}
 	}
-	h.log.Info("chat request completed",
+	logging.FromContext(r.Context()).Info("chat request completed",
 		"tenant_id", id.TenantID,
 		"key_prefix", id.KeyPrefix,
 		"model", o.Model,

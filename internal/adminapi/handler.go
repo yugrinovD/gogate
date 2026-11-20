@@ -98,7 +98,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	dbStatus := componentPing(ctx, h.store.Ping)
-	redisStatus := componentPing(ctx, func(context.Context) error { return h.redis.Ping(ctx).Err() })
+	redisStatus := h.pingRedis(ctx)
 	code := http.StatusOK
 	if !boolField(dbStatus, "ok") || !boolField(redisStatus, "ok") {
 		code = http.StatusServiceUnavailable
@@ -127,6 +127,13 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 func boolField(m map[string]any, key string) bool {
 	v, _ := m[key].(bool)
 	return v
+}
+
+func (h *Handler) pingRedis(ctx context.Context) map[string]any {
+	if h.redis == nil {
+		return map[string]any{"ok": false, "error": "redis is not configured"}
+	}
+	return componentPing(ctx, func(context.Context) error { return h.redis.Ping(ctx).Err() })
 }
 
 func componentPing(ctx context.Context, fn func(context.Context) error) map[string]any {
@@ -644,14 +651,27 @@ func (h *Handler) purgeCache(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		TenantID string `json:"tenant_id"`
 		Model    string `json:"model"`
+		Semantic *bool  `json:"semantic"`
 		Exact    bool   `json:"exact"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
+	semanticRequested := in.Semantic != nil && *in.Semantic
+	if !semanticRequested && !in.Exact {
+		apierr.BadRequest(w, r, "invalid_cache_purge", "set semantic=true and/or exact=true")
+		return
+	}
+	if in.TenantID != "" && !validateID(w, r, in.TenantID) {
+		return
+	}
+	if semanticRequested && h.semantic == nil {
+		apierr.BadRequest(w, r, "semantic_cache_disabled", "semantic cache is not enabled")
+		return
+	}
 	var semantic, exact int64
 	var err error
-	if h.semantic != nil {
+	if semanticRequested {
 		semantic, err = h.store.PurgeSemanticCache(r.Context(), in.TenantID, in.Model)
 		if err != nil {
 			apierr.Internal(w, r, "purge semantic cache failed")
@@ -665,7 +685,11 @@ func (h *Handler) purgeCache(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"semantic_deleted": semantic, "exact_deleted": exact})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"semantic_deleted": semantic,
+		"exact_deleted":    exact,
+		"exact_scope":      "global",
+	})
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {

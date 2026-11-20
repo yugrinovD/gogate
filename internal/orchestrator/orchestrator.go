@@ -258,13 +258,13 @@ func (o *Orchestrator) tryProvider(ctx context.Context, p provider.Provider, cfg
 			}
 			attemptSpan.RecordError(lastErr)
 			attemptSpan.End()
+			if isClientCanceled(ctx, err) {
+				return nil, err
+			}
 			o.recordFailure(p.Name(), lastErr)
 			resolved = true
 			if o.observer != nil {
 				o.observer.ProviderFailure(p.Name(), lastErr)
-			}
-			if isClientCanceled(ctx, err) {
-				return nil, err
 			}
 			if errors.Is(lastErr, ErrFirstByteTimeout) || retryable(err) {
 				continue
@@ -283,13 +283,13 @@ func (o *Orchestrator) tryProvider(ctx context.Context, p provider.Provider, cfg
 			}
 			attemptSpan.RecordError(lastErr)
 			attemptSpan.End()
+			if isClientCanceled(ctx, err) {
+				return nil, err
+			}
 			o.recordFailure(p.Name(), lastErr)
 			resolved = true
 			if o.observer != nil {
 				o.observer.ProviderFailure(p.Name(), lastErr)
-			}
-			if isClientCanceled(ctx, err) {
-				return nil, err
 			}
 			if errors.Is(lastErr, ErrFirstByteTimeout) || retryable(err) {
 				continue
@@ -340,21 +340,31 @@ func (o *Orchestrator) recordFailure(providerName string, err error) {
 	}
 }
 
+const maxRetryAfter = 30 * time.Second
+
+func backoffDuration(attempt int, base, max, retryAfter time.Duration) time.Duration {
+	d := base << (attempt - 1)
+	if d > max || d <= 0 {
+		d = max
+	}
+	if retryAfter > maxRetryAfter {
+		retryAfter = maxRetryAfter
+	}
+	if retryAfter > d {
+		d = retryAfter
+	}
+	return d
+}
+
 func (o *Orchestrator) waitBackoff(ctx context.Context, attempt int, retryAfter time.Duration) error {
-	d := o.backoff << (attempt - 1)
-	if d > o.maxBackoff || d <= 0 {
-		d = o.maxBackoff
+	d := backoffDuration(attempt, o.backoff, o.maxBackoff, retryAfter)
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= d {
+		return context.DeadlineExceeded
 	}
-	if retryAfter > 0 {
-		if retryAfter > o.maxBackoff {
-			retryAfter = o.maxBackoff
-		}
-		if retryAfter > d {
-			d = retryAfter
-		}
+	if retryAfter <= 0 {
+		jitter := time.Duration(rand.Int64N(int64(d/2) + 1))
+		d = d/2 + jitter
 	}
-	jitter := time.Duration(rand.Int64N(int64(d/2) + 1))
-	d = d/2 + jitter
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
@@ -378,6 +388,9 @@ func retryable(err error) bool {
 
 func shouldTripBreaker(err error) bool {
 	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
 		return false
 	}
 	var ue *provider.UpstreamError

@@ -124,3 +124,13 @@ func ValidateEnvName(name, prefix string) error {
 	}
 	return nil
 }
+
+// MinKeyBytes returns the minimum length of a generated key for an environment.
+func MinKeyBytes(env string) int {
+	env = sanitizeSegment(env)
+	if env == "" {
+		env = "dev"
+	}
+	// gk_ + env + _ + 12 hex prefix + _ + 64 hex secret
+	return 3 + len(env) + 1 + 12 + 1 + 64
+}

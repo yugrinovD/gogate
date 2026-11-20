@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yugrinovD/gogate/internal/security"
 )
 
 // Config is the complete runtime configuration. Secrets are only read from the
@@ -187,8 +189,8 @@ func (c Config) Validate() error {
 	if c.MaxInflight <= 0 {
 		errs = append(errs, errors.New("GOGATE_MAX_INFLIGHT must be positive"))
 	}
-	if c.MaxAPIKeyBytes < 64 {
-		errs = append(errs, errors.New("GOGATE_MAX_API_KEY_BYTES must be at least 64"))
+	if c.MaxAPIKeyBytes < security.MinKeyBytes(c.Env) {
+		errs = append(errs, fmt.Errorf("GOGATE_MAX_API_KEY_BYTES must be at least %d for env %q", security.MinKeyBytes(c.Env), c.Env))
 	}
 	if c.RequestTimeout <= 0 || c.FirstByteTimeout <= 0 || c.StreamIdleTimeout <= 0 {
 		errs = append(errs, errors.New("request, first-byte and stream-idle timeouts must be positive"))
@@ -196,8 +198,8 @@ func (c Config) Validate() error {
 	if c.CacheTTL <= 0 {
 		errs = append(errs, errors.New("GOGATE_CACHE_TTL must be positive"))
 	}
-	if c.ControlReloadInterval <= 0 {
-		errs = append(errs, errors.New("GOGATE_CONTROL_RELOAD_INTERVAL must be positive"))
+	if c.ControlReloadInterval < 0 {
+		errs = append(errs, errors.New("GOGATE_CONTROL_RELOAD_INTERVAL must be >= 0 (0 disables periodic reload)"))
 	}
 	if strings.TrimSpace(c.UpstreamKeyEnvPrefix) == "" || !strings.HasSuffix(c.UpstreamKeyEnvPrefix, "_") {
 		errs = append(errs, errors.New("GOGATE_UPSTREAM_KEY_PREFIX must be non-empty and end with '_'"))
@@ -220,8 +222,23 @@ func (c Config) Validate() error {
 	if c.AuditRetention <= 0 {
 		errs = append(errs, errors.New("GOGATE_AUDIT_RETENTION must be positive"))
 	}
-	if c.SecureEnv() && c.SemanticCacheEnabled && strings.EqualFold(c.EmbeddingProvider, "mock") {
-		errs = append(errs, errors.New("semantic cache with the mock embedder is not allowed in production"))
+	if c.SemanticCacheEnabled {
+		switch strings.ToLower(c.EmbeddingProvider) {
+		case "mock":
+			if c.SecureEnv() {
+				errs = append(errs, errors.New("semantic cache with the mock embedder is not allowed in production"))
+			}
+		case "ollama":
+			if strings.TrimSpace(c.OllamaBaseURL) == "" {
+				errs = append(errs, errors.New("GOGATE_OLLAMA_BASE_URL is required for the ollama embedder"))
+			}
+		case "openai":
+			if strings.TrimSpace(c.OpenAIBaseURL) == "" {
+				errs = append(errs, errors.New("GOGATE_OPENAI_BASE_URL is required for the openai embedder"))
+			}
+		default:
+			errs = append(errs, fmt.Errorf("unsupported GOGATE_EMBEDDING_PROVIDER %q (use mock, ollama or openai)", c.EmbeddingProvider))
+		}
 	}
 	return errors.Join(errs...)
 }

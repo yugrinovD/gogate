@@ -91,6 +91,7 @@ data: [DONE]
 | 429 | `rate_limit_exceeded`, `insufficient_quota` | RPM/TPM/квота/бюджет |
 | 502 | `upstream_error` | upstream 5xx/network или ошибка конфигурации auth |
 | 503 | `all_providers_unavailable` | все breaker'ы открыты |
+| 503 | `pricing_unavailable` | у тенанта есть бюджет, но цена модели не настроена |
 | 504 | `upstream_timeout` | таймаут первого байта или idle стрима |
 
 ## Admin API
@@ -117,7 +118,7 @@ data: [DONE]
 | DELETE | `/admin/v1/prices/{id}` | удалить цену |
 | GET | `/admin/v1/usage` | дневная агрегация |
 | GET | `/admin/v1/audit` | аудит без prompt/response |
-| POST | `/admin/v1/cache/purge` | очистка semantic/exact кэша |
+| POST | `/admin/v1/cache/purge` | очистка semantic/exact кэша; требуется `semantic=true` и/или `exact=true`; exact purge глобальный |
 
 ### Создание ключа
 

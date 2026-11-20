@@ -126,6 +126,7 @@ func (p *Provider) doChat(ctx context.Context, body requestBody, allowFallback b
 		_ = resp.Body.Close()
 		if allowFallback && body.StreamOptions != nil && resp.StatusCode == http.StatusBadRequest &&
 			bytes.Contains(bytes.ToLower(bodyBytes), []byte("stream_options")) {
+			p.log.Debug("upstream rejects stream_options; retrying without it", "provider", p.name)
 			body.StreamOptions = nil
 			return p.doChat(ctx, body, false)
 		}
@@ -138,7 +139,7 @@ func (p *Provider) doChat(ctx context.Context, body requestBody, allowFallback b
 	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64<<10), 2<<20)
-	return &stream{provider: p.name, body: resp.Body, scanner: scanner, log: p.log}, nil
+	return &stream{provider: p.name, body: resp.Body, scanner: scanner}, nil
 }
 
 func (p *Provider) authorize(req *http.Request) {
@@ -195,7 +196,6 @@ type stream struct {
 	provider string
 	body     io.ReadCloser
 	scanner  *bufio.Scanner
-	log      *slog.Logger
 	closed   bool
 }
 

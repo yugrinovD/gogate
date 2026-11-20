@@ -91,7 +91,10 @@ make demo-ollama     # поднимет Ollama, скачает qwen2.5:3b и с�
 make llm
 ```
 
-Ollama использует отдельный volume и не обязателен для `make demo`.
+Ollama использует отдельный volume и не обязателен для `make demo`. Если
+`GOGATE_OLLAMA_BASE_URL` задан, модель `qwen2.5:3b` может быть видна в
+`/v1/models` до запуска Ollama; запросы к ней начнут работать после
+`make demo-ollama` / `make llm`.
 
 ### Полезные команды
 
@@ -184,8 +187,8 @@ OpenAPI 3.1 (English): [public](api/openapi.public.yaml) · [admin](api/openapi.
 | `GOGATE_DATABASE_URL` | local DSN | PostgreSQL |
 | `GOGATE_REDIS_ADDR` | `127.0.0.1:6379` | Redis |
 | `GOGATE_MAX_OUTPUT_TOKENS` | `4096` | верхняя граница `max_tokens` |
-| `GOGATE_MAX_API_KEY_BYTES` | `256` | максимум длины API-ключа до хэширования |
-| `GOGATE_CONTROL_RELOAD_INTERVAL` | `30s` | периодический reload control plane для реплик |
+| `GOGATE_MAX_API_KEY_BYTES` | `256` | максимум длины API-ключа до хэширования; не меньше длины сгенерированного ключа |
+| `GOGATE_CONTROL_RELOAD_INTERVAL` | `30s` | периодический reload control plane; `0` отключает, остаётся pub/sub |
 | `GOGATE_UPSTREAM_KEY_PREFIX` | `GOGATE_UPSTREAM_` | разрешённый префикс `api_key_env` |
 | `GOGATE_ALLOW_PRIVATE_UPSTREAMS` | `false` | private/loopback upstream; в demo-`.env` включён для Ollama |
 | `GOGATE_REQUEST_TIMEOUT` | `120s` | общий таймаут запроса |
@@ -201,6 +204,7 @@ OpenAPI 3.1 (English): [public](api/openapi.public.yaml) · [admin](api/openapi.
 | `GOGATE_TRACE_SAMPLE_RATIO` | `1` | sampling трейсов |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | например `http://jaeger:4318` |
 | `GOGATE_ACCESS_LOG_SAMPLE` | `1` | sampling access-логов |
+| `GOGATE_CORS_ALLOWED_ORIGINS` | — | явный allowlist Origin; пусто = CORS выключен |
 
 Полный список — в [.env.example](.env.example) и
 [docs/OPERATIONS.md](docs/OPERATIONS.md).
@@ -260,11 +264,11 @@ status, latency, tokens, cost, cache. Prompt/response и API-ключи не л�
 | RPS | 500.0 |
 | Ошибки | 0% |
 | p50 | 0.44 ms |
-| p95 | 0.56 ms |
-| p99 | 0.82 ms |
-| max | 7.35 ms |
+| p95 | 0.54 ms |
+| p99 | 0.75 ms |
+| max | 56.8 ms |
 | Baseline mock-upstream, p99 | 0.21 ms |
-| Overhead p99 | ≈ 0.62 ms |
+| Overhead p99 | ≈ 0.54 ms |
 | RSS gogate под нагрузкой | ≈ 60 MiB |
 
 Железо: 16 vCPU, 31 GiB RAM, Debian 13, Docker 29.10. Цифры зависят от хоста;

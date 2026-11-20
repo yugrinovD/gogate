@@ -92,7 +92,9 @@ make demo-ollama     # starts Ollama, pulls qwen2.5:3b and sends a request
 make llm
 ```
 
-Ollama uses a separate volume and is optional for `make demo`.
+Ollama uses a separate volume and is optional for `make demo`. If
+`GOGATE_OLLAMA_BASE_URL` is set, `qwen2.5:3b` may be visible in `/v1/models`
+before Ollama starts; requests work after `make demo-ollama` / `make llm`.
 
 ### Common targets
 
@@ -185,8 +187,8 @@ Everything is configured through env. There are no secrets in the repository:
 | `GOGATE_DATABASE_URL` | local DSN | PostgreSQL |
 | `GOGATE_REDIS_ADDR` | `127.0.0.1:6379` | Redis |
 | `GOGATE_MAX_OUTPUT_TOKENS` | `4096` | `max_tokens` upper bound |
-| `GOGATE_MAX_API_KEY_BYTES` | `256` | maximum API key length before hashing |
-| `GOGATE_CONTROL_RELOAD_INTERVAL` | `30s` | periodic control-plane reload for replicas |
+| `GOGATE_MAX_API_KEY_BYTES` | `256` | maximum API key length before hashing; must exceed the generated key length |
+| `GOGATE_CONTROL_RELOAD_INTERVAL` | `30s` | periodic control-plane reload; `0` disables it and leaves pub/sub |
 | `GOGATE_UPSTREAM_KEY_PREFIX` | `GOGATE_UPSTREAM_` | allowed `api_key_env` prefix |
 | `GOGATE_ALLOW_PRIVATE_UPSTREAMS` | `false` | private/loopback upstream; demo `.env` enables it for Ollama |
 | `GOGATE_REQUEST_TIMEOUT` | `120s` | overall request timeout |
@@ -202,6 +204,7 @@ Everything is configured through env. There are no secrets in the repository:
 | `GOGATE_TRACE_SAMPLE_RATIO` | `1` | trace sampling ratio |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | e.g. `http://jaeger:4318` |
 | `GOGATE_ACCESS_LOG_SAMPLE` | `1` | access log sampling |
+| `GOGATE_CORS_ALLOWED_ORIGINS` | — | explicit Origin allowlist; empty disables CORS |
 
 See [.env.example](.env.example) and [docs/OPERATIONS.en.md](docs/OPERATIONS.en.md).
 
@@ -261,11 +264,11 @@ unique prompt in every request):
 | RPS | 500.0 |
 | Errors | 0% |
 | p50 | 0.44 ms |
-| p95 | 0.56 ms |
-| p99 | 0.82 ms |
-| max | 7.35 ms |
+| p95 | 0.54 ms |
+| p99 | 0.75 ms |
+| max | 56.8 ms |
 | Baseline mock upstream p99 | 0.21 ms |
-| p99 overhead | ≈ 0.62 ms |
+| p99 overhead | ≈ 0.54 ms |
 | gogate RSS under load | ≈ 60 MiB |
 
 Hardware: 16 vCPU, 31 GiB RAM, Debian 13, Docker 29.10. Results depend on the

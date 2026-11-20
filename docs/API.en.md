@@ -91,6 +91,7 @@ frame and `data: [DONE]` are sent; fallback is forbidden at that point.
 | 429 | `rate_limit_exceeded`, `insufficient_quota` | RPM/TPM/quota/budget |
 | 502 | `upstream_error` | upstream 5xx/network or auth configuration error |
 | 503 | `all_providers_unavailable` | all breakers open |
+| 503 | `pricing_unavailable` | tenant has a budget but the model has no price |
 | 504 | `upstream_timeout` | first-byte or stream-idle timeout |
 
 ## Admin API
@@ -117,7 +118,7 @@ Authentication: `Authorization: Bearer $GOGATE_ADMIN_TOKEN`.
 | DELETE | `/admin/v1/prices/{id}` | delete price |
 | GET | `/admin/v1/usage` | daily aggregates |
 | GET | `/admin/v1/audit` | audit without prompt/response |
-| POST | `/admin/v1/cache/purge` | purge semantic/exact cache |
+| POST | `/admin/v1/cache/purge` | purge semantic/exact cache; requires `semantic=true` and/or `exact=true`; exact purge is global |
 
 ### Create a key
 

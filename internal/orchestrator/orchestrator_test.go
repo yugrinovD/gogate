@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yugrinovD/gogate/internal/breaker"
 	"github.com/yugrinovD/gogate/internal/control"
 	"github.com/yugrinovD/gogate/internal/provider"
 	"github.com/yugrinovD/gogate/internal/provider/registry"
@@ -167,5 +168,56 @@ func TestFirstByteTimeoutSentinel(t *testing.T) {
 	})
 	if !errors.Is(err, ErrFirstByteTimeout) {
 		t.Fatalf("expected first-byte timeout, got %v", err)
+	}
+}
+
+func TestClientCancelDoesNotTripBreaker(t *testing.T) {
+	orch := newOrch(t, []provider.Config{
+		mockConfig("slow-cancel", "slow-cancel", 1, map[string]any{"latency_ms": 1000}),
+	}, Options{BreakerThreshold: 1, FirstByteTimeout: 2 * time.Second})
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	_, err := orch.Open(ctx, provider.Request{
+		Model: "slow-cancel", Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	if state := orch.Breakers().State("slow-cancel"); state != breaker.StateClosed {
+		t.Fatalf("client cancel tripped breaker: %s", state)
+	}
+	if !orch.Breakers().Allow("slow-cancel") {
+		t.Fatal("provider should still be allowed")
+	}
+}
+
+func TestShouldTripBreakerIgnoresCanceled(t *testing.T) {
+	if shouldTripBreaker(&provider.UpstreamError{Err: context.Canceled}) {
+		t.Fatal("canceled upstream error must not trip breaker")
+	}
+	if shouldTripBreaker(&provider.UpstreamError{StatusCode: 500}) {
+		// expected true, checked below
+	} else {
+		t.Fatal("5xx must trip breaker")
+	}
+}
+
+func TestBackoffDuration(t *testing.T) {
+	base := 100 * time.Millisecond
+	max := 2 * time.Second
+	if got := backoffDuration(1, base, max, 0); got != base {
+		t.Fatalf("attempt 1=%s", got)
+	}
+	if got := backoffDuration(10, base, max, 0); got != max {
+		t.Fatalf("cap=%s", got)
+	}
+	if got := backoffDuration(1, base, max, 10*time.Second); got != 10*time.Second {
+		t.Fatalf("retry-after=%s", got)
+	}
+	if got := backoffDuration(1, base, max, 60*time.Second); got != maxRetryAfter {
+		t.Fatalf("retry-after cap=%s", got)
 	}
 }

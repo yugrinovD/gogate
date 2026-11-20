@@ -324,6 +324,22 @@ func TestGatewayEndToEnd(t *testing.T) {
 		}
 	})
 
+	t.Run("pricing unavailable", func(t *testing.T) {
+		a.adminJSON(t, http.MethodPost, "/admin/v1/providers", map[string]any{
+			"name": "unpriced", "kind": "mock", "models": []string{"unpriced"},
+			"priority": 70, "enabled": true, "timeout_ms": 5000, "max_retries": 0,
+		}, nil)
+		tenant := a.createTenant(t, "unpriced-tenant")
+		key := a.createKey(t, tenant, "unpriced-key", nil)
+		a.upsertQuota(t, map[string]any{"tenant_id": tenant, "rpm": 100, "tpm": 1000000, "monthly_cost_usd": 10})
+		status, body := a.request(t, http.MethodPost, "/v1/chat/completions", map[string]any{
+			"model": "unpriced", "messages": []map[string]any{{"role": "user", "content": "priced?"}}, "max_tokens": 8,
+		}, key)
+		if status != http.StatusServiceUnavailable || !strings.Contains(string(body), "pricing_unavailable") {
+			t.Fatalf("status=%d body=%s", status, body)
+		}
+	})
+
 	t.Run("semantic cache", func(t *testing.T) {
 		hash := []byte("hash-one")
 		shortMax, longMax := 10, 1000
@@ -461,6 +477,59 @@ func TestGatewayEndToEnd(t *testing.T) {
 		}
 		if count == 0 {
 			t.Fatal("usage was deleted together with the key")
+		}
+	})
+
+	t.Run("cache purge requires explicit scope", func(t *testing.T) {
+		status, _ := a.adminRequest(t, http.MethodPost, "/admin/v1/cache/purge", map[string]any{})
+		if status != http.StatusBadRequest {
+			t.Fatalf("empty purge status=%d", status)
+		}
+		status, _ = a.adminRequest(t, http.MethodPost, "/admin/v1/cache/purge", map[string]any{"tenant_id": "not-a-uuid", "semantic": true})
+		if status != http.StatusBadRequest {
+			t.Fatalf("invalid tenant purge status=%d", status)
+		}
+		status, _ = a.adminRequest(t, http.MethodPost, "/admin/v1/cache/purge", map[string]any{"tenant_id": a.tenantID, "semantic": true})
+		if status != http.StatusOK {
+			t.Fatalf("valid purge status=%d", status)
+		}
+	})
+
+	t.Run("request timeout closes SSE gracefully", func(t *testing.T) {
+		a.adminJSON(t, http.MethodPost, "/admin/v1/providers", map[string]any{
+			"name": "slow-stream", "kind": "mock", "models": []string{"slow-stream"},
+			"priority": 60, "enabled": true, "timeout_ms": 5000, "max_retries": 0,
+			"config": map[string]any{"chunk_delay_ms": 10},
+		}, nil)
+		if err := st.EnsureZeroPrice(ctx, "slow-stream", "slow-stream"); err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.Reload(ctx); err != nil {
+			t.Fatal(err)
+		}
+		slowCfg := cfg
+		slowCfg.RequestTimeout = 60 * time.Millisecond
+		slowChat := httpapi.New(httpapi.Options{
+			Config: slowCfg, Control: manager, Orch: orch, Limiter: limiter,
+			Exact: exact, Semantic: semantic, Usage: writer, Metrics: metrics, Logger: logger,
+		})
+		slowServer := httptest.NewServer(middleware.APIKey(func() *control.Snapshot { return manager.Snapshot() }, cfg.Pepper, cfg.MaxAPIKeyBytes, nil)(http.HandlerFunc(slowChat.ChatCompletions)))
+		defer slowServer.Close()
+		req := a.newRequest(t, http.MethodPost, "/v1/chat/completions", map[string]any{
+			"model": "slow-stream", "stream": true, "max_tokens": 64,
+			"messages": []map[string]any{{"role": "user", "content": "slow stream"}},
+		}, a.apiKey)
+		req.URL.Scheme = "http"
+		req.URL.Host = strings.TrimPrefix(slowServer.URL, "http://")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		text := string(raw)
+		if !strings.Contains(text, "request_timeout") || !strings.Contains(text, "data: [DONE]") {
+			t.Fatalf("missing graceful timeout frame: %s", text)
 		}
 	})
 

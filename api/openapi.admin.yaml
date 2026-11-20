@@ -404,10 +404,11 @@ paths:
               properties:
                 tenant_id: {type: string, format: uuid}
                 model: {type: string}
-                exact: {type: boolean, default: false}
+                semantic: {type: boolean, default: false, description: Purge semantic cache for tenant/model.}
+                exact: {type: boolean, default: false, description: Purge the exact Redis cache. This scope is global.}
       responses:
         '200':
-          description: Number of deleted entries.
+          description: Number of deleted entries. At least one of semantic/exact must be true.
           content:
             application/json:
               schema:

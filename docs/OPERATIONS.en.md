@@ -78,17 +78,28 @@ curl -s -X POST localhost:9090/admin/v1/cache/purge -H "$AUTH" \
 
 Mutations rebuild the in-memory snapshot and publish a Redis notification. Each
 replica also reloads the control plane periodically
-(`GOGATE_CONTROL_RELOAD_INTERVAL`, 30s by default), so key revocation reaches all
-replicas within that interval. `POST /reload` is needed when a provider
+(`GOGATE_CONTROL_RELOAD_INTERVAL`, 30s by default; `0` disables periodic
+reload), so key revocation reaches all replicas within that interval or
+immediately through pub/sub. `POST /reload` is needed when a provider
 appears/disappears in DNS (for example, the Ollama container was started after
 gogate) or when the control plane was changed directly in the database.
 
 ## Hot reload and Ollama
 
-`GOGATE_OLLAMA_BASE_URL` may point to a container that does not exist yet. At
-startup such a provider is skipped with a warning. After `make llm` or
-`make demo-ollama`, call `POST /admin/v1/reload` and the provider appears in
-`/v1/models`.
+If `GOGATE_OLLAMA_BASE_URL` is set, the `ollama` provider and its models are
+registered even before the container starts. `qwen2.5:3b` is then visible in
+`/v1/models`, but requests return `502 upstream_error` until Ollama is running.
+`POST /admin/v1/reload` is only needed when the provider row is absent (for
+example, bootstrap was skipped with `GOGATE_ALLOW_PRIVATE_UPSTREAMS=false` and
+DNS did not resolve at startup). `make demo` does not guarantee a working
+`qwen2.5:3b`; use `make demo-ollama` or `make llm`.
+
+## Pricing and budgets
+
+Mock and Ollama get a zero price at bootstrap. Other models are priced through
+`POST /admin/v1/prices`. If a tenant has `monthly_cost_usd` but the model has no
+price, the request receives `503 pricing_unavailable` and
+`gogate_pricing_missing_total` increments. This prevents uncontrolled spend.
 
 ## Retention
 
@@ -151,3 +162,12 @@ rm .env            # then make init-env
   can be restored separately.
 - Redis: not a source of truth. Losing Redis resets limits/cache, not configuration.
 - `.env` contains secrets; keep it in a secret manager, never in git.
+
+## Upgrade notes
+
+- `GOGATE_OPENAI_KEY_ENV` must reference a `GOGATE_UPSTREAM_` variable (for
+  example `GOGATE_UPSTREAM_OPENAI_API_KEY`).
+- `GOGATE_MAX_API_KEY_BYTES` must be at least the generated key length for your
+  `GOGATE_ENV`; for `dev` it is 84 bytes, a safe minimum is 128.
+- With `GOGATE_OLLAMA_BASE_URL`, a model may be visible in `/v1/models` before
+  Ollama starts; requests work after `make llm`/`make demo-ollama`.

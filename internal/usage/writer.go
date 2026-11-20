@@ -12,9 +12,17 @@ import (
 	"github.com/yugrinovD/gogate/internal/store"
 )
 
+// BatchStore is the subset of the store used by the async writer, kept as an
+// interface so retry behaviour can be tested without a database.
+type BatchStore interface {
+	InsertUsage(context.Context, []store.UsageRecord) error
+	InsertAudit(context.Context, []store.AuditRecord) error
+	TouchAPIKeys(context.Context, []string) error
+}
+
 // Writer asynchronously flushes usage and audit batches to PostgreSQL.
 type Writer struct {
-	store  *store.Store
+	store  BatchStore
 	log    *slog.Logger
 	usage  chan store.UsageRecord
 	audit  chan store.AuditRecord
@@ -36,7 +44,7 @@ type Options struct {
 }
 
 // NewWriter creates a writer and starts its background flushers.
-func NewWriter(st *store.Store, log *slog.Logger, opts Options) *Writer {
+func NewWriter(st BatchStore, log *slog.Logger, opts Options) *Writer {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -285,31 +293,41 @@ func mergeUsage(in []store.UsageRecord) []store.UsageRecord {
 	return out
 }
 
+const retryDelay = 200 * time.Millisecond
+
 func (w *Writer) retryUsage(records []store.UsageRecord) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for _, rec := range records {
-		if ctx.Err() != nil {
+	select {
+	case <-time.After(retryDelay):
+	case <-w.stop:
+		for range records {
 			w.dropUsage()
-			continue
 		}
-		if err := w.store.InsertUsage(ctx, []store.UsageRecord{rec}); err != nil {
-			w.log.Warn("usage record dropped", "error", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := w.store.InsertUsage(ctx, records); err != nil {
+		w.log.Warn("usage batch dropped after retry", "records", len(records), "error", err)
+		for range records {
 			w.dropUsage()
 		}
 	}
 }
 
 func (w *Writer) retryAudit(records []store.AuditRecord) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for _, rec := range records {
-		if ctx.Err() != nil {
+	select {
+	case <-time.After(retryDelay):
+	case <-w.stop:
+		for range records {
 			w.dropAudit()
-			continue
 		}
-		if err := w.store.InsertAudit(ctx, []store.AuditRecord{rec}); err != nil {
-			w.log.Warn("audit record dropped", "error", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := w.store.InsertAudit(ctx, records); err != nil {
+		w.log.Warn("audit batch dropped after retry", "records", len(records), "error", err)
+		for range records {
 			w.dropAudit()
 		}
 	}
