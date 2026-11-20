@@ -669,6 +669,10 @@ func (h *Handler) purgeCache(w http.ResponseWriter, r *http.Request) {
 		apierr.BadRequest(w, r, "semantic_cache_disabled", "semantic cache is not enabled")
 		return
 	}
+	if in.Exact && h.exact == nil {
+		apierr.BadRequest(w, r, "exact_cache_disabled", "exact cache is not enabled")
+		return
+	}
 	var semantic, exact int64
 	var err error
 	if semanticRequested {
@@ -744,26 +748,26 @@ func validateID(w http.ResponseWriter, r *http.Request, id string) bool {
 }
 
 func validateQuota(q store.Quota) error {
-	negative := func(name string, v *int) error {
-		if v != nil && *v < 0 {
-			return fmt.Errorf("%s must be non-negative", name)
+	positive := func(name string, v *int) error {
+		if v != nil && *v <= 0 {
+			return fmt.Errorf("%s must be positive; use null to remove the limit", name)
 		}
 		return nil
 	}
-	if err := negative("rpm", q.RPM); err != nil {
+	if err := positive("rpm", q.RPM); err != nil {
 		return err
 	}
-	if err := negative("tpm", q.TPM); err != nil {
+	if err := positive("tpm", q.TPM); err != nil {
 		return err
 	}
-	if q.DailyRequests != nil && *q.DailyRequests < 0 {
-		return fmt.Errorf("daily_requests must be non-negative")
+	if q.DailyRequests != nil && *q.DailyRequests <= 0 {
+		return fmt.Errorf("daily_requests must be positive; use null to remove the limit")
 	}
-	if q.DailyTokens != nil && *q.DailyTokens < 0 {
-		return fmt.Errorf("daily_tokens must be non-negative")
+	if q.DailyTokens != nil && *q.DailyTokens <= 0 {
+		return fmt.Errorf("daily_tokens must be positive; use null to remove the limit")
 	}
-	if q.MonthlyCostUSD != nil && *q.MonthlyCostUSD < 0 {
-		return fmt.Errorf("monthly_cost_usd must be non-negative")
+	if q.MonthlyCostUSD != nil && *q.MonthlyCostUSD <= 0 {
+		return fmt.Errorf("monthly_cost_usd must be positive; use null to remove the limit")
 	}
 	return nil
 }

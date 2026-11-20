@@ -435,3 +435,29 @@ func traceAttrs(providerName, model string) []trace.SpanStartOption {
 		attribute.String("model", model),
 	)}
 }
+
+// ErrorKind classifies errors for metrics and logs. It is shared by the
+// orchestrator observer and HTTP handler so both use one label vocabulary.
+func ErrorKind(err error) string {
+	var ue *provider.UpstreamError
+	if errors.As(err, &ue) {
+		switch {
+		case ue.StatusCode == 429:
+			return "rate_limited"
+		case ue.StatusCode >= 500:
+			return "upstream_5xx"
+		case ue.StatusCode >= 400:
+			return "upstream_4xx"
+		case ue.StatusCode == 0:
+			return "network"
+		}
+	}
+	switch {
+	case errors.Is(err, ErrFirstByteTimeout), errors.Is(err, ErrStreamIdle), errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	default:
+		return "error"
+	}
+}

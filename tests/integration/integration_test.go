@@ -421,12 +421,38 @@ func TestGatewayEndToEnd(t *testing.T) {
 		if status != http.StatusBadRequest {
 			t.Fatalf("negative quota status=%d", status)
 		}
+		status, _ = a.adminRequest(t, http.MethodPost, "/admin/v1/quotas", map[string]any{
+			"tenant_id": a.tenantID, "rpm": 0,
+		})
+		if status != http.StatusBadRequest {
+			t.Fatalf("zero quota status=%d", status)
+		}
 		status, _ = a.adminRequest(t, http.MethodPost, "/admin/v1/providers", map[string]any{
 			"name": "unsafe-env", "kind": "mock", "models": []string{"unsafe"},
 			"api_key_env": "AWS_SECRET_ACCESS_KEY",
 		})
 		if status != http.StatusBadRequest {
 			t.Fatalf("unsafe api_key_env status=%d", status)
+		}
+	})
+
+	t.Run("legacy api_key_env accepted", func(t *testing.T) {
+		if _, err := st.CreateProvider(ctx, store.Provider{
+			Name: "legacy-env", Kind: "mock", Models: []string{"legacy-env"},
+			APIKeyEnv: "GOGATE_OPENAI_API_KEY", Priority: 80, Enabled: true,
+			TimeoutMS: 5000, MaxRetries: 0, Config: json.RawMessage(`{}`),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.EnsureZeroPrice(ctx, "legacy-env", "legacy-env"); err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.Reload(ctx); err != nil {
+			t.Fatal(err)
+		}
+		status, body := a.request(t, http.MethodGet, "/v1/models", nil, a.apiKey)
+		if status != 200 || !strings.Contains(string(body), "legacy-env") {
+			t.Fatalf("legacy provider not active: status=%d body=%s", status, body)
 		}
 	})
 
@@ -499,7 +525,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 		a.adminJSON(t, http.MethodPost, "/admin/v1/providers", map[string]any{
 			"name": "slow-stream", "kind": "mock", "models": []string{"slow-stream"},
 			"priority": 60, "enabled": true, "timeout_ms": 5000, "max_retries": 0,
-			"config": map[string]any{"chunk_delay_ms": 10},
+			"config": map[string]any{"chunk_delay_ms": 50},
 		}, nil)
 		if err := st.EnsureZeroPrice(ctx, "slow-stream", "slow-stream"); err != nil {
 			t.Fatal(err)
@@ -508,7 +534,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 		slowCfg := cfg
-		slowCfg.RequestTimeout = 60 * time.Millisecond
+		slowCfg.RequestTimeout = 300 * time.Millisecond
 		slowChat := httpapi.New(httpapi.Options{
 			Config: slowCfg, Control: manager, Orch: orch, Limiter: limiter,
 			Exact: exact, Semantic: semantic, Usage: writer, Metrics: metrics, Logger: logger,

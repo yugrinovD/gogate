@@ -80,6 +80,7 @@ type Manager struct {
 	httpClient     *http.Client
 	snap           atomic.Pointer[Snapshot]
 	reloadMu       sync.Mutex
+	legacyWarned   map[string]struct{}
 }
 
 // NewManager creates a manager.
@@ -90,7 +91,7 @@ func NewManager(st *store.Store, log *slog.Logger, allowPrivate bool, httpClient
 	if upstreamPrefix == "" {
 		upstreamPrefix = "GOGATE_UPSTREAM_"
 	}
-	m := &Manager{store: st, log: log, allowPrivate: allowPrivate, upstreamPrefix: upstreamPrefix, httpClient: httpClient}
+	m := &Manager{store: st, log: log, allowPrivate: allowPrivate, upstreamPrefix: upstreamPrefix, httpClient: httpClient, legacyWarned: make(map[string]struct{})}
 	empty := &Snapshot{
 		KeysByPrefix: map[string]Key{},
 		Tenants:      map[string]Tenant{},
@@ -172,8 +173,14 @@ func (m *Manager) Reload(ctx context.Context) error {
 		apiKey := ""
 		if p.APIKeyEnv != "" {
 			if err := security.ValidateEnvName(p.APIKeyEnv, m.upstreamPrefix); err != nil {
-				m.log.Warn("provider skipped: unsafe api_key_env", "provider", p.Name, "error", err)
-				continue
+				if !security.IsLegacyUpstreamEnv(p.APIKeyEnv) {
+					m.log.Warn("provider skipped: unsafe api_key_env", "provider", p.Name, "error", err)
+					continue
+				}
+				if _, warned := m.legacyWarned[p.Name]; !warned {
+					m.legacyWarned[p.Name] = struct{}{}
+					m.log.Warn("provider uses legacy api_key_env; rename to GOGATE_UPSTREAM_*", "provider", p.Name, "api_key_env", p.APIKeyEnv)
+				}
 			}
 			apiKey = os.Getenv(p.APIKeyEnv)
 		}

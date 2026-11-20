@@ -80,18 +80,18 @@ Mutations rebuild the in-memory snapshot and publish a Redis notification. Each
 replica also reloads the control plane periodically
 (`GOGATE_CONTROL_RELOAD_INTERVAL`, 30s by default; `0` disables periodic
 reload), so key revocation reaches all replicas within that interval or
-immediately through pub/sub. `POST /reload` is needed when a provider
-appears/disappears in DNS (for example, the Ollama container was started after
-gogate) or when the control plane was changed directly in the database.
+immediately through pub/sub. `POST /reload` only refreshes existing provider
+rows. If a row is absent, create it through the admin API; restart bootstraps
+only an empty `providers` table.
 
 ## Hot reload and Ollama
 
 If `GOGATE_OLLAMA_BASE_URL` is set, the `ollama` provider and its models are
 registered even before the container starts. `qwen2.5:3b` is then visible in
 `/v1/models`, but requests return `502 upstream_error` until Ollama is running.
-`POST /admin/v1/reload` is only needed when the provider row is absent (for
-example, bootstrap was skipped with `GOGATE_ALLOW_PRIVATE_UPSTREAMS=false` and
-DNS did not resolve at startup). `make demo` does not guarantee a working
+If the provider row is absent (for example, bootstrap was skipped with
+`GOGATE_ALLOW_PRIVATE_UPSTREAMS=false`), create it through the admin API;
+`POST /reload` does not insert new rows. `make demo` does not guarantee a working
 `qwen2.5:3b`; use `make demo-ollama` or `make llm`.
 
 ## Pricing and budgets
@@ -100,6 +100,12 @@ Mock and Ollama get a zero price at bootstrap. Other models are priced through
 `POST /admin/v1/prices`. If a tenant has `monthly_cost_usd` but the model has no
 price, the request receives `503 pricing_unavailable` and
 `gogate_pricing_missing_total` increments. This prevents uncontrolled spend.
+
+## Quotas
+
+`null`/missing means no limit. `0` for `rpm`, `tpm`, `daily_*` and
+`monthly_cost_usd` is rejected. Existing zero values are normalized to `NULL` by
+a migration.
 
 ## Retention
 
@@ -166,7 +172,9 @@ rm .env            # then make init-env
 ## Upgrade notes
 
 - `GOGATE_OPENAI_KEY_ENV` must reference a `GOGATE_UPSTREAM_` variable (for
-  example `GOGATE_UPSTREAM_OPENAI_API_KEY`).
+  example `GOGATE_UPSTREAM_OPENAI_API_KEY`). The old
+  `GOGATE_OPENAI_API_KEY` is temporarily accepted with a deprecation warning;
+  update both `.env` and `providers.api_key_env` (or recreate the provider).
 - `GOGATE_MAX_API_KEY_BYTES` must be at least the generated key length for your
   `GOGATE_ENV`; for `dev` it is 84 bytes, a safe minimum is 128.
 - With `GOGATE_OLLAMA_BASE_URL`, a model may be visible in `/v1/models` before

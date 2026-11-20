@@ -102,6 +102,12 @@ func ParseKeyLimited(key string, maxBytes int) (prefix, secret string, err error
 	return ParseKey(key)
 }
 
+// LegacyOpenAIKeyEnv is the only legacy provider secret name still accepted.
+const LegacyOpenAIKeyEnv = "GOGATE_OPENAI_API_KEY"
+
+// IsLegacyUpstreamEnv reports whether name is the single supported legacy name.
+func IsLegacyUpstreamEnv(name string) bool { return strings.TrimSpace(name) == LegacyOpenAIKeyEnv }
+
 // ValidateEnvName restricts provider secret references to an allowlisted env
 // prefix, preventing an admin from exfiltrating unrelated process secrets.
 func ValidateEnvName(name, prefix string) error {

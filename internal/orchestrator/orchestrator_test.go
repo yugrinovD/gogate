@@ -221,3 +221,24 @@ func TestBackoffDuration(t *testing.T) {
 		t.Fatalf("retry-after cap=%s", got)
 	}
 }
+
+func TestErrorKind(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{ErrFirstByteTimeout, "timeout"},
+		{ErrStreamIdle, "timeout"},
+		{context.Canceled, "canceled"},
+		{&provider.UpstreamError{StatusCode: 429}, "rate_limited"},
+		{&provider.UpstreamError{StatusCode: 500}, "upstream_5xx"},
+		{&provider.UpstreamError{StatusCode: 400}, "upstream_4xx"},
+		{&provider.UpstreamError{}, "network"},
+		{errors.New("boom"), "error"},
+	}
+	for _, tc := range cases {
+		if got := ErrorKind(tc.err); got != tc.want {
+			t.Fatalf("%v: got %s want %s", tc.err, got, tc.want)
+		}
+	}
+}

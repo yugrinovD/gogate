@@ -102,7 +102,7 @@ func run() error {
 			}
 		}
 		if cfg.OpenAIBaseURL != "" && len(cfg.OpenAIModels) > 0 {
-			if err := security.ValidateEnvName(cfg.OpenAIKeyEnv, cfg.UpstreamKeyEnvPrefix); err != nil {
+			if err := security.ValidateEnvName(cfg.OpenAIKeyEnv, cfg.UpstreamKeyEnvPrefix); err != nil && !security.IsLegacyUpstreamEnv(cfg.OpenAIKeyEnv) {
 				log.Warn("openai bootstrap skipped: invalid api key env", "error", err)
 			} else if err := validateBootstrapURL(cfg.OpenAIBaseURL, cfg.AllowPrivateUpstream); err != nil {
 				log.Warn("openai bootstrap skipped: invalid base url", "error", err)
@@ -325,8 +325,8 @@ func run() error {
 type orchestratorObserver struct{ metrics *observability.Metrics }
 
 func (o *orchestratorObserver) ProviderRetry(name string, _ int) { o.metrics.IncRetry(name) }
-func (o *orchestratorObserver) ProviderFailure(name string, _ error) {
-	o.metrics.IncUpstreamError(name, "precommit")
+func (o *orchestratorObserver) ProviderFailure(name string, err error) {
+	o.metrics.IncUpstreamError(name, orchestrator.ErrorKind(err))
 }
 
 func breakerLoop(ctx context.Context, metrics *observability.Metrics, orch *orchestrator.Orchestrator) {

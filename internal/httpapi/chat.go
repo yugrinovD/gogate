@@ -289,6 +289,9 @@ func (h *Handler) nonStream(w http.ResponseWriter, r *http.Request, start time.T
 			break
 		}
 		if err != nil {
+			if h.metrics != nil {
+				h.metrics.IncUpstreamError(sess.Provider(), orchestrator.ErrorKind(err))
+			}
 			h.writeOpenError(w, r, start, req, limits, reservedTokens, reservedCost, piiRedacted, err)
 			return
 		}
@@ -425,7 +428,7 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, start time.Time
 			break
 		}
 		if err != nil {
-			errCode = errorKind(err)
+			errCode = orchestrator.ErrorKind(err)
 			if errors.Is(r.Context().Err(), context.DeadlineExceeded) {
 				errCode = "timeout"
 			}
@@ -561,9 +564,6 @@ func (h *Handler) writeOpenError(w http.ResponseWriter, r *http.Request, start t
 		h.finish(r, outcome{Model: req.Model, Status: 499, Latency: time.Since(start), ErrorCode: "client_canceled", PII: piiRedacted})
 		return
 	}
-	if h.metrics != nil {
-		h.metrics.IncUpstreamError(upstreamProvider(err), errorKind(err))
-	}
 	var ue *provider.UpstreamError
 	if errors.As(err, &ue) && ue.RetryAfter > 0 {
 		w.Header().Set("Retry-After", ratelimit.RetryAfterHeader(ue.RetryAfter))
@@ -616,30 +616,6 @@ func upstreamProvider(err error) string {
 		return ue.Provider
 	}
 	return ""
-}
-
-func errorKind(err error) string {
-	var ue *provider.UpstreamError
-	if errors.As(err, &ue) {
-		switch {
-		case ue.StatusCode == http.StatusTooManyRequests:
-			return "rate_limited"
-		case ue.StatusCode >= 500:
-			return "upstream_5xx"
-		case ue.StatusCode >= 400:
-			return "upstream_4xx"
-		case ue.StatusCode == 0:
-			return "network"
-		}
-	}
-	switch {
-	case errors.Is(err, orchestrator.ErrFirstByteTimeout), errors.Is(err, orchestrator.ErrStreamIdle), errors.Is(err, context.DeadlineExceeded):
-		return "timeout"
-	case errors.Is(err, context.Canceled):
-		return "canceled"
-	default:
-		return "error"
-	}
 }
 
 func writeSSE(w io.Writer, v any) error {

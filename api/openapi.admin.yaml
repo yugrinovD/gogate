@@ -553,22 +553,22 @@ components:
         id: {type: string, format: uuid}
         tenant_id: {type: string, format: uuid}
         api_key_id: {type: [string, 'null'], format: uuid}
-        rpm: {type: [integer, 'null']}
-        tpm: {type: [integer, 'null']}
-        daily_requests: {type: [integer, 'null']}
-        daily_tokens: {type: [integer, 'null']}
-        monthly_cost_usd: {type: [number, 'null']}
+        rpm: {type: [integer, 'null'], minimum: 1}
+        tpm: {type: [integer, 'null'], minimum: 1}
+        daily_requests: {type: [integer, 'null'], minimum: 1}
+        daily_tokens: {type: [integer, 'null'], minimum: 1}
+        monthly_cost_usd: {type: [number, 'null'], minimum: 1}
     QuotaInput:
       type: object
       required: [tenant_id]
       properties:
         tenant_id: {type: string, format: uuid}
         api_key_id: {type: [string, 'null'], format: uuid}
-        rpm: {type: [integer, 'null'], minimum: 0}
-        tpm: {type: [integer, 'null'], minimum: 0}
-        daily_requests: {type: [integer, 'null'], minimum: 0}
-        daily_tokens: {type: [integer, 'null'], minimum: 0}
-        monthly_cost_usd: {type: [number, 'null'], minimum: 0}
+        rpm: {type: [integer, 'null'], minimum: 1}
+        tpm: {type: [integer, 'null'], minimum: 1}
+        daily_requests: {type: [integer, 'null'], minimum: 1}
+        daily_tokens: {type: [integer, 'null'], minimum: 1}
+        monthly_cost_usd: {type: [number, 'null'], minimum: 1}
     ModelPrice:
       type: object
       properties:

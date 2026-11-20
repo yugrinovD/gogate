@@ -157,7 +157,7 @@ func (w *Writer) usageLoop(batchSize int, interval time.Duration) {
 		span.End()
 		cancel()
 		if err != nil {
-			w.log.Error("usage batch flush failed; retrying individually", "records", len(merged), "error", err)
+			w.log.Error("usage batch flush failed; retrying batch", "records", len(merged), "error", err)
 			w.retryUsage(merged)
 		}
 		buf = buf[:0]
@@ -203,7 +203,7 @@ func (w *Writer) auditLoop(batchSize int, interval time.Duration) {
 		span.End()
 		cancel()
 		if err != nil {
-			w.log.Error("audit batch flush failed; retrying individually", "records", len(buf), "error", err)
+			w.log.Error("audit batch flush failed; retrying batch", "records", len(buf), "error", err)
 			w.retryAudit(buf)
 		}
 		buf = buf[:0]

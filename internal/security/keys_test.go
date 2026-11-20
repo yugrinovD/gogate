@@ -87,3 +87,12 @@ func TestMinKeyBytes(t *testing.T) {
 		t.Fatalf("generated key is shorter than minimum: %d < %d", len(mat.Plaintext), dev)
 	}
 }
+
+func TestLegacyOpenAIKeyEnv(t *testing.T) {
+	if !IsLegacyUpstreamEnv("GOGATE_OPENAI_API_KEY") {
+		t.Fatal("legacy name should be accepted")
+	}
+	if IsLegacyUpstreamEnv("GOGATE_OPENAI_API_KEY_2") {
+		t.Fatal("only the exact legacy name is allowed")
+	}
+}

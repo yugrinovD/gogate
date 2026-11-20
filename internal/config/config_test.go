@@ -123,3 +123,42 @@ func TestControlReloadIntervalCanDisable(t *testing.T) {
 		t.Fatal("negative interval must be rejected")
 	}
 }
+
+func TestOpenAIKeyEnvValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		base    string
+		keyEnv  string
+		wantErr bool
+	}{
+		{"new prefix", "https://api.openai.com/v1", "GOGATE_UPSTREAM_OPENAI_API_KEY", false},
+		{"legacy", "https://api.openai.com/v1", "GOGATE_OPENAI_API_KEY", false},
+		{"arbitrary", "https://api.openai.com/v1", "AWS_SECRET_ACCESS_KEY", true},
+		{"no base url", "", "AWS_SECRET_ACCESS_KEY", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GOGATE_API_KEY_PEPPER", "0123456789abcdef")
+			t.Setenv("GOGATE_OPENAI_BASE_URL", tc.base)
+			t.Setenv("GOGATE_OPENAI_KEY_ENV", tc.keyEnv)
+			_, err := Load()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestEmbeddingProviderNormalized(t *testing.T) {
+	t.Setenv("GOGATE_API_KEY_PEPPER", "0123456789abcdef")
+	t.Setenv("GOGATE_SEMANTIC_CACHE_ENABLED", "true")
+	t.Setenv("GOGATE_EMBEDDING_PROVIDER", "OLLAMA")
+	t.Setenv("GOGATE_OLLAMA_BASE_URL", "http://ollama:11434")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EmbeddingProvider != "ollama" {
+		t.Fatalf("provider=%q", cfg.EmbeddingProvider)
+	}
+}

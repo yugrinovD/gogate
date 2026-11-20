@@ -80,18 +80,19 @@ curl -s -X POST localhost:9090/admin/v1/cache/purge -H "$AUTH" \
 в Redis. Каждая реплика также периодически перечитывает control plane
 (`GOGATE_CONTROL_RELOAD_INTERVAL`, по умолчанию 30s; `0` отключает periodic
 reload), поэтому отзыв ключа применяется на всех репликах в пределах интервала
-или сразу через pub/sub. `POST /reload` нужен, если
-провайдер появился/исчез по DNS (например, контейнер Ollama был запущен после
-gogate) или если control plane меняли напрямую в БД.
+или сразу через pub/sub. `POST /reload` обновляет только уже существующие
+строки провайдеров. Если строки не было (например, bootstrap был пропущен),
+создайте провайдера через admin API; перезапуск bootstrap-ит только пустую
+таблицу `providers`.
 
 ## Hot reload и Ollama
 
 Если `GOGATE_OLLAMA_BASE_URL` задан, провайдер `ollama` и его модели
 регистрируются даже до запуска контейнера. В этом случае `qwen2.5:3b` видна в
 `/v1/models`, но запросы к ней возвращают `502 upstream_error`, пока Ollama не
-запущена. `POST /admin/v1/reload` нужен только если строки провайдера вообще не
-было (например, bootstrap пропущен при `GOGATE_ALLOW_PRIVATE_UPSTREAMS=false`
-и DNS не резолвился на старте). `make demo` не гарантирует работу
+запущена. Если строки провайдера вообще не было (например, bootstrap пропущен
+при `GOGATE_ALLOW_PRIVATE_UPSTREAMS=false`), создайте её через admin API:
+`POST /reload` не добавляет новые строки. `make demo` не гарантирует работу
 `qwen2.5:3b`; для неё используйте `make demo-ollama` или `make llm`.
 
 ## Цены и бюджеты
@@ -101,6 +102,12 @@ gogate) или если control plane меняли напрямую в БД.
 `monthly_cost_usd`, а цены для модели нет, запрос получает
 `503 pricing_unavailable`, а метрика `gogate_pricing_missing_total` растёт.
 Это защищает от неконтролируемого расхода.
+
+## Квоты
+
+`null`/отсутствие поля означает отсутствие лимита. `0` для `rpm`, `tpm`,
+`daily_*` и `monthly_cost_usd` отклоняется. Старые нулевые значения
+нормализуются миграцией в `NULL`.
 
 ## Retention
 
@@ -168,7 +175,9 @@ rm .env            # затем make init-env
 ## Обновление
 
 - `GOGATE_OPENAI_KEY_ENV` должен указывать на переменную с префиксом
-  `GOGATE_UPSTREAM_` (например, `GOGATE_UPSTREAM_OPENAI_API_KEY`).
+  `GOGATE_UPSTREAM_` (например, `GOGATE_UPSTREAM_OPENAI_API_KEY`). Старое
+  `GOGATE_OPENAI_API_KEY` временно принимается с deprecation warning; обновите
+  и `.env`, и `providers.api_key_env` (или пересоздайте провайдера).
 - `GOGATE_MAX_API_KEY_BYTES` должен быть не меньше минимальной длины ключа для
   вашего `GOGATE_ENV`; при `dev` это 84 байта, безопасный минимум — 128.
 - При `GOGATE_OLLAMA_BASE_URL` модель может быть видна в `/v1/models` до

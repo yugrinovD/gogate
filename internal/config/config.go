@@ -113,7 +113,7 @@ func Load() (Config, error) {
 		CacheTTL:     l.Duration("GOGATE_CACHE_TTL", 5*time.Minute),
 
 		SemanticCacheEnabled: l.Bool("GOGATE_SEMANTIC_CACHE_ENABLED", false),
-		EmbeddingProvider:    l.String("GOGATE_EMBEDDING_PROVIDER", "mock"),
+		EmbeddingProvider:    strings.ToLower(strings.TrimSpace(l.String("GOGATE_EMBEDDING_PROVIDER", "mock"))),
 		EmbeddingModel:       l.String("GOGATE_EMBEDDING_MODEL", "mock-embed"),
 		SemanticThreshold:    l.Float("GOGATE_SEMANTIC_THRESHOLD", 0.95),
 
@@ -203,6 +203,11 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.UpstreamKeyEnvPrefix) == "" || !strings.HasSuffix(c.UpstreamKeyEnvPrefix, "_") {
 		errs = append(errs, errors.New("GOGATE_UPSTREAM_KEY_PREFIX must be non-empty and end with '_'"))
+	}
+	if strings.TrimSpace(c.OpenAIBaseURL) != "" && strings.TrimSpace(c.OpenAIKeyEnv) != "" {
+		if err := security.ValidateEnvName(c.OpenAIKeyEnv, c.UpstreamKeyEnvPrefix); err != nil && !security.IsLegacyUpstreamEnv(c.OpenAIKeyEnv) {
+			errs = append(errs, fmt.Errorf("GOGATE_OPENAI_KEY_ENV is invalid: %w", err))
+		}
 	}
 	if c.SemanticThreshold <= 0 || c.SemanticThreshold > 1 {
 		errs = append(errs, errors.New("GOGATE_SEMANTIC_THRESHOLD must be in (0,1]"))
