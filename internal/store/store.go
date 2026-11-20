@@ -31,6 +31,9 @@ type Store struct {
 
 // Open creates a pool and verifies connectivity.
 func Open(ctx context.Context, databaseURL string, maxConns int32, log *slog.Logger) (*Store, error) {
+	if log == nil {
+		log = slog.Default()
+	}
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse database url: %w", err)

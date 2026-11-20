@@ -142,7 +142,8 @@ changes that.
 ## Scaling
 
 - Horizontal: multiple instances behind a load balancer; shared control plane
-  (PostgreSQL), shared limits and cache (Redis).
+  (PostgreSQL), shared limits and cache (Redis). Each replica periodically
+  reloads the control plane and listens to the `gogate:control:reload` Redis channel.
 - Redis Cluster needs a different key schema: current Lua scripts assume a single
   Redis instance.
 - Public listener is stateless; state lives only in PostgreSQL/Redis.

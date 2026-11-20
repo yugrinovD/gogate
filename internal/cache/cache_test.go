@@ -50,3 +50,31 @@ func TestMockEmbedderSimilarity(t *testing.T) {
 		}
 	}
 }
+
+func TestParamsHashIncludesGenerationParameters(t *testing.T) {
+	temp := 0.2
+	base := KeyInput{Model: "mock", Temperature: &temp}
+	h1 := ParamsHash(base)
+	same := ParamsHash(base)
+	if string(h1) != string(same) {
+		t.Fatal("params hash must be stable")
+	}
+	otherTemp := 0.7
+	base.Temperature = &otherTemp
+	h2 := ParamsHash(base)
+	if string(h1) == string(h2) {
+		t.Fatal("temperature must change params hash")
+	}
+	base.Temperature = &temp
+	maxTokens := 64
+	base.MaxTokens = &maxTokens
+	h3 := ParamsHash(base)
+	if string(h1) == string(h3) {
+		t.Fatal("max_tokens must change params hash")
+	}
+	base.PIIRedaction = true
+	h4 := ParamsHash(base)
+	if string(h3) == string(h4) {
+		t.Fatal("PII mode must change params hash")
+	}
+}

@@ -16,16 +16,24 @@ import (
 	"github.com/yugrinovD/gogate/internal/provider"
 )
 
+// CacheVersion invalidates cached entries when the key schema or redaction
+// semantics change.
+const CacheVersion = "v2"
+
 // KeyInput contains all fields that affect a non-streaming response.
 type KeyInput struct {
-	TenantID    string
-	Model       string
-	Messages    []provider.Message
-	Temperature *float64
-	TopP        *float64
-	MaxTokens   *int
-	Stop        []string
-	Seed        *int
+	TenantID         string
+	Model            string
+	Messages         []provider.Message
+	Temperature      *float64
+	TopP             *float64
+	MaxTokens        *int
+	MaxCompletion    *int
+	Stop             []string
+	Seed             *int
+	PresencePenalty  *float64
+	FrequencyPenalty *float64
+	PIIRedaction     bool
 }
 
 // CachedResponse is the stored representation.
@@ -50,29 +58,58 @@ func NewExact(client *redis.Client, ttl time.Duration) *Exact {
 	return &Exact{client: client, ttl: ttl}
 }
 
-// Key returns a tenant-scoped cache key and canonical prompt hash.
-func (e *Exact) Key(in KeyInput) (key string, promptHash []byte, prompt string) {
-	return Key(in)
-}
-
 // Key computes the cache key without requiring a Redis client.
 func Key(in KeyInput) (key string, promptHash []byte, prompt string) {
 	payload := struct {
-		TenantID    string             `json:"tenant_id"`
-		Model       string             `json:"model"`
-		Messages    []provider.Message `json:"messages"`
-		Temperature *float64           `json:"temperature"`
-		TopP        *float64           `json:"top_p"`
-		MaxTokens   *int               `json:"max_tokens"`
-		Stop        []string           `json:"stop"`
-		Seed        *int               `json:"seed"`
+		Version          string             `json:"version"`
+		TenantID         string             `json:"tenant_id"`
+		Model            string             `json:"model"`
+		Messages         []provider.Message `json:"messages"`
+		Temperature      *float64           `json:"temperature"`
+		TopP             *float64           `json:"top_p"`
+		MaxTokens        *int               `json:"max_tokens"`
+		MaxCompletion    *int               `json:"max_completion_tokens"`
+		Stop             []string           `json:"stop"`
+		Seed             *int               `json:"seed"`
+		PresencePenalty  *float64           `json:"presence_penalty"`
+		FrequencyPenalty *float64           `json:"frequency_penalty"`
+		PIIRedaction     bool               `json:"pii_redaction"`
 	}{
-		TenantID: in.TenantID, Model: in.Model, Messages: in.Messages,
-		Temperature: in.Temperature, TopP: in.TopP, MaxTokens: in.MaxTokens, Stop: in.Stop, Seed: in.Seed,
+		Version: CacheVersion, TenantID: in.TenantID, Model: in.Model, Messages: in.Messages,
+		Temperature: in.Temperature, TopP: in.TopP, MaxTokens: in.MaxTokens,
+		MaxCompletion: in.MaxCompletion, Stop: in.Stop, Seed: in.Seed,
+		PresencePenalty: in.PresencePenalty, FrequencyPenalty: in.FrequencyPenalty,
+		PIIRedaction: in.PIIRedaction,
 	}
 	body, _ := json.Marshal(payload)
 	sum := sha256.Sum256(body)
 	return "gogate:cache:chat:" + hex.EncodeToString(sum[:]), sum[:], CanonicalPrompt(in.Messages)
+}
+
+// ParamsHash hashes generation-affecting parameters without messages. It is
+// used to stop semantic cache from mixing responses produced with different
+// sampling or token limits.
+func ParamsHash(in KeyInput) []byte {
+	payload := struct {
+		Version          string   `json:"version"`
+		Model            string   `json:"model"`
+		Temperature      *float64 `json:"temperature"`
+		TopP             *float64 `json:"top_p"`
+		MaxTokens        *int     `json:"max_tokens"`
+		MaxCompletion    *int     `json:"max_completion_tokens"`
+		Stop             []string `json:"stop"`
+		Seed             *int     `json:"seed"`
+		PresencePenalty  *float64 `json:"presence_penalty"`
+		FrequencyPenalty *float64 `json:"frequency_penalty"`
+		PIIRedaction     bool     `json:"pii_redaction"`
+	}{
+		Version: CacheVersion, Model: in.Model, Temperature: in.Temperature, TopP: in.TopP,
+		MaxTokens: in.MaxTokens, MaxCompletion: in.MaxCompletion, Stop: in.Stop, Seed: in.Seed,
+		PresencePenalty: in.PresencePenalty, FrequencyPenalty: in.FrequencyPenalty, PIIRedaction: in.PIIRedaction,
+	}
+	body, _ := json.Marshal(payload)
+	sum := sha256.Sum256(body)
+	return sum[:]
 }
 
 // CanonicalPrompt produces the text used for semantic embeddings.

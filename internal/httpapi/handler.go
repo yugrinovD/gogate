@@ -126,13 +126,16 @@ func (h *Handler) maxOutput(req chatRequest) int {
 	return maxOut
 }
 
-func (h *Handler) estimate(snap *control.Snapshot, model string, messages []provider.Message, maxOut int) (promptTokens, reserveTokens int, estimatedCost float64) {
+func (h *Handler) estimate(snap *control.Snapshot, model string, messages []provider.Message, maxOut int) (promptTokens, reserveTokens int, estimatedCost float64, priceKnown bool) {
 	promptTokens = tokenest.Prompt(messages)
 	reserveTokens = promptTokens + maxOut
 	chain := snap.Providers.ForModel(model)
 	if len(chain) > 0 {
-		price := snap.PriceFor(chain[0].Name(), model)
-		estimatedCost = cost.Calculate(cost.Price{Input: price.InputUSDPer1M, Output: price.OutputUSDPer1M}, promptTokens, maxOut)
+		price, ok := snap.PriceFor(chain[0].Name(), model)
+		priceKnown = ok
+		if ok {
+			estimatedCost = cost.Calculate(cost.Price{Input: price.InputUSDPer1M, Output: price.OutputUSDPer1M}, promptTokens, maxOut)
+		}
 	}
 	return
 }
@@ -235,4 +238,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func totalUsage(prompt, completion int) provider.Usage {
 	return provider.Usage{PromptTokens: prompt, CompletionTokens: completion, TotalTokens: prompt + completion}
+}
+
+func hasMonthlyBudget(limits []ratelimit.Limit) bool {
+	for _, l := range limits {
+		if l.MonthlyCostUSD != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) firstProvider(snap *control.Snapshot, model string) string {
+	chain := snap.Providers.ForModel(model)
+	if len(chain) == 0 {
+		return ""
+	}
+	return chain[0].Name()
 }

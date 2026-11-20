@@ -33,20 +33,20 @@
 requests: 30,001
 rps:      500.0
 errors:   0%
-p50:      0.43 ms
-p95:      0.53 ms
-p99:      0.71 ms
-max:      43.0 ms
+p50:      0.44 ms
+p95:      0.56 ms
+p99:      0.82 ms
+max:      7.35 ms
 ```
 
 ## Baseline and overhead
 
 | Scenario | p50 | p95 | p99 | max |
 | --- | --- | --- | --- | --- |
-| gogate (500 RPS, 60s) | 0.43 ms | 0.53 ms | 0.71 ms | 43.0 ms |
+| gogate (500 RPS, 60s) | 0.44 ms | 0.56 ms | 0.82 ms | 7.35 ms |
 | mock upstream directly (500 RPS, 30s) | 0.12 ms | 0.15 ms | 0.21 ms | 30.7 ms |
 
-p99 overhead is ≈ **0.5 ms**, far below the 50 ms target. Max includes rare
+p99 overhead is ≈ **0.62 ms**, far below the 50 ms target. Max includes rare
 scheduler/GC outliers and is not typical latency.
 
 ## Memory
@@ -59,10 +59,10 @@ PostgreSQL ≈ 40 MiB, Redis ≈ 10 MiB (empty caches).
 `make bench`:
 
 ```text
-BenchmarkKey-16            770484    1377 ns/op    952 B/op   11 allocs/op
-BenchmarkMockEmbedder-16   690471    1600 ns/op   3200 B/op    2 allocs/op
-BenchmarkHashSecret-16   11182098     107.6 ns/op    32 B/op    1 allocs/op
-BenchmarkGenerateKey-16   2722834     439.9 ns/op   352 B/op    7 allocs/op
+BenchmarkKey-16            645720    1655 ns/op   1161 B/op   11 allocs/op
+BenchmarkMockEmbedder-16   698066    1579 ns/op   3200 B/op    2 allocs/op
+BenchmarkHashSecret-16   11187235     107.3 ns/op    32 B/op    1 allocs/op
+BenchmarkGenerateKey-16   2756547     438.1 ns/op   352 B/op    7 allocs/op
 ```
 
 These are microbenchmarks of individual operations, not gateway throughput.

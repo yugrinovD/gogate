@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM golang:1.27.4-alpine AS build
+FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS build
 WORKDIR /src
 RUN apk add --no-cache ca-certificates git
 
@@ -18,7 +18,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -o /out/gogate ./cmd/gogate && \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/gogate-mockupstream ./cmd/gogate-mockupstream
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 WORKDIR /app
 COPY --from=build /out/gogate /app/gogate
 COPY --from=build /out/gogate-mockupstream /app/gogate-mockupstream

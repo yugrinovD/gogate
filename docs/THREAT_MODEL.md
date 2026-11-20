@@ -82,6 +82,8 @@ client ──(public, API key)──► gogate ──(admin token, separate port
 - pprof только по флагу и только на admin.
 - Конфиг отдаётся без секретов.
 - Секреты провайдеров — только env; в БД хранится имя переменной.
+- `api_key_env` ограничен префиксом `GOGATE_UPSTREAM_`, чтобы admin не мог
+  прочитать произвольный секрет процесса (`GOGATE_API_KEY_PEPPER`, `AWS_*`).
 
 Рекомендация: не публиковать admin-порт в интернет; использовать VPN/bastion.
 

@@ -2,9 +2,13 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/yugrinovD/gogate/internal/config"
+	"github.com/yugrinovD/gogate/internal/orchestrator"
+	"github.com/yugrinovD/gogate/internal/provider"
 )
 
 func TestParseContent(t *testing.T) {
@@ -58,4 +62,49 @@ func TestValidateBounds(t *testing.T) {
 	if code, _ := h.validate(&req); code != "too_many_messages" {
 		t.Fatalf("code=%s", code)
 	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+func TestWriteSSEReturnsWriteError(t *testing.T) {
+	if err := writeSSE(failingWriter{}, chatChunk{}); err == nil {
+		t.Fatal("expected write error")
+	}
+}
+
+func TestMapOpenError(t *testing.T) {
+	status, code, _ := mapOpenError(orchestrator.ErrFirstByteTimeout)
+	if status != http.StatusGatewayTimeout || code != "upstream_timeout" {
+		t.Fatalf("timeout mapping: %d %s", status, code)
+	}
+	status, code, _ = mapOpenError(&provider.UpstreamError{StatusCode: http.StatusBadRequest})
+	if status != http.StatusBadRequest || code != "upstream_invalid_request" {
+		t.Fatalf("400 mapping: %d %s", status, code)
+	}
+	status, code, _ = mapOpenError(&provider.UpstreamError{StatusCode: http.StatusTooManyRequests})
+	if status != http.StatusTooManyRequests || code != "rate_limit_exceeded" {
+		t.Fatalf("429 mapping: %d %s", status, code)
+	}
+	status, _, _ = mapOpenError(&provider.UpstreamError{StatusCode: http.StatusInternalServerError})
+	if status != http.StatusBadGateway {
+		t.Fatalf("500 mapping: %d", status)
+	}
+}
+
+func FuzzParseContent(f *testing.F) {
+	f.Add([]byte(`"hello"`))
+	f.Add([]byte(`[{"type":"text","text":"hi"}]`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = parseContent(json.RawMessage(data))
+	})
+}
+
+func FuzzParseStop(f *testing.F) {
+	f.Add([]byte(`"END"`))
+	f.Add([]byte(`["a","b"]`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = parseStop(json.RawMessage(data))
+	})
 }

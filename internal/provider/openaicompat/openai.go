@@ -16,12 +16,13 @@ import (
 
 // Provider proxies requests to an OpenAI-compatible /chat/completions endpoint.
 type Provider struct {
-	name    string
-	baseURL string
-	apiKey  string
-	models  []string
-	client  *http.Client
-	log     *slog.Logger
+	name                 string
+	baseURL              string
+	apiKey               string
+	models               []string
+	client               *http.Client
+	log                  *slog.Logger
+	disableStreamOptions bool
 }
 
 // New creates an OpenAI-compatible adapter.
@@ -32,13 +33,20 @@ func New(c provider.Config, client *http.Client, log *slog.Logger) (*Provider, e
 	if log == nil {
 		log = slog.Default()
 	}
+	var raw struct {
+		DisableStreamOptions bool `json:"disable_stream_options"`
+	}
+	if len(c.RawConfig) > 0 {
+		_ = json.Unmarshal(c.RawConfig, &raw)
+	}
 	return &Provider{
-		name:    c.Name,
-		baseURL: strings.TrimRight(c.BaseURL, "/"),
-		apiKey:  c.APIKey,
-		models:  append([]string(nil), c.Models...),
-		client:  client,
-		log:     log,
+		name:                 c.Name,
+		baseURL:              strings.TrimRight(c.BaseURL, "/"),
+		apiKey:               c.APIKey,
+		models:               append([]string(nil), c.Models...),
+		client:               client,
+		log:                  log,
+		disableStreamOptions: raw.DisableStreamOptions,
 	}, nil
 }
 
@@ -57,6 +65,7 @@ func (p *Provider) Ping(ctx context.Context) error {
 		return &provider.UpstreamError{Provider: p.name, Message: "upstream health check failed", Err: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode >= 300 {
 		return &provider.UpstreamError{Provider: p.name, StatusCode: resp.StatusCode, Message: "upstream health check failed"}
 	}
@@ -89,8 +98,14 @@ func (p *Provider) Chat(ctx context.Context, req provider.Request) (provider.Str
 		PresencePenalty:  req.PresencePenalty,
 		FrequencyPenalty: req.FrequencyPenalty,
 		Stream:           true,
-		StreamOptions:    map[string]bool{"include_usage": true},
 	}
+	if !p.disableStreamOptions {
+		body.StreamOptions = map[string]bool{"include_usage": true}
+	}
+	return p.doChat(ctx, body, true)
+}
+
+func (p *Provider) doChat(ctx context.Context, body requestBody, allowFallback bool) (provider.Stream, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -107,12 +122,18 @@ func (p *Provider) Chat(ctx context.Context, req provider.Request) (provider.Str
 		return nil, &provider.UpstreamError{Provider: p.name, Message: "upstream request failed", Err: err}
 	}
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<10))
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<10))
 		_ = resp.Body.Close()
+		if allowFallback && body.StreamOptions != nil && resp.StatusCode == http.StatusBadRequest &&
+			bytes.Contains(bytes.ToLower(bodyBytes), []byte("stream_options")) {
+			body.StreamOptions = nil
+			return p.doChat(ctx, body, false)
+		}
 		return nil, &provider.UpstreamError{
 			Provider:   p.name,
 			StatusCode: resp.StatusCode,
-			Message:    upstreamErrorMessage(body),
+			Message:    upstreamErrorMessage(bodyBytes),
+			RetryAfter: provider.ParseRetryAfter(resp.Header.Get("Retry-After")),
 		}
 	}
 	scanner := bufio.NewScanner(resp.Body)

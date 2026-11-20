@@ -21,6 +21,7 @@ import (
 type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
 	Model() string
+	Dimensions() int
 }
 
 // Semantic caches non-streaming responses by embedding similarity.
@@ -43,14 +44,14 @@ func NewSemantic(st *store.Store, embedder Embedder, threshold float64, ttl time
 }
 
 // Lookup returns the closest cached entry above the similarity threshold.
-func (s *Semantic) Lookup(ctx context.Context, tenantID, model, prompt string) (*store.SemanticEntry, error) {
+func (s *Semantic) Lookup(ctx context.Context, tenantID, model, prompt string, paramsHash []byte) (*store.SemanticEntry, error) {
 	ctx, span := observability.Tracer().Start(ctx, "cache.semantic.get")
 	defer span.End()
 	vec, err := s.embedder.Embed(ctx, prompt)
 	if err != nil {
 		return nil, err
 	}
-	entry, err := s.store.FindSemantic(ctx, tenantID, model, vec, 1-s.threshold)
+	entry, err := s.store.FindSemantic(ctx, tenantID, model, paramsHash, vec, 1-s.threshold)
 	if err != nil {
 		if store.IsNotFound(err) {
 			span.SetAttributes(attribute.Bool("cache.hit", false))
@@ -63,14 +64,14 @@ func (s *Semantic) Lookup(ctx context.Context, tenantID, model, prompt string) (
 }
 
 // Store persists a response with its embedding.
-func (s *Semantic) Store(ctx context.Context, tenantID, model, prompt, providerName string, promptHash, response, usage []byte, cost float64) error {
+func (s *Semantic) Store(ctx context.Context, tenantID, model, prompt string, paramsHash []byte, providerName string, promptHash, response, usage []byte, cost float64) error {
 	ctx, span := observability.Tracer().Start(ctx, "cache.semantic.set")
 	defer span.End()
 	vec, err := s.embedder.Embed(ctx, prompt)
 	if err != nil {
 		return err
 	}
-	return s.store.InsertSemantic(ctx, tenantID, model, promptHash, providerName, vec, response, usage, cost, time.Now().Add(s.ttl))
+	return s.store.InsertSemantic(ctx, tenantID, model, promptHash, paramsHash, providerName, vec, response, usage, cost, time.Now().Add(s.ttl))
 }
 
 // MockEmbedder is a deterministic bag-of-words random projection used by demo
@@ -85,7 +86,8 @@ func NewMockEmbedder(model string) *MockEmbedder {
 	return &MockEmbedder{model: model}
 }
 
-func (m *MockEmbedder) Model() string { return m.model }
+func (m *MockEmbedder) Model() string   { return m.model }
+func (m *MockEmbedder) Dimensions() int { return 768 }
 
 func (m *MockEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
 	vec := make([]float32, 768)
@@ -131,7 +133,8 @@ func NewOllamaEmbedder(baseURL, model string, client *http.Client) *OllamaEmbedd
 	return &OllamaEmbedder{baseURL: strings.TrimRight(baseURL, "/"), model: model, client: client}
 }
 
-func (o *OllamaEmbedder) Model() string { return o.model }
+func (o *OllamaEmbedder) Model() string   { return o.model }
+func (o *OllamaEmbedder) Dimensions() int { return 768 }
 
 func (o *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	body, _ := json.Marshal(map[string]any{"model": o.model, "input": text})
@@ -182,7 +185,8 @@ func NewOpenAIEmbedder(baseURL, apiKey, model string, client *http.Client) *Open
 	return &OpenAIEmbedder{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, model: model, client: client}
 }
 
-func (o *OpenAIEmbedder) Model() string { return o.model }
+func (o *OpenAIEmbedder) Model() string   { return o.model }
+func (o *OpenAIEmbedder) Dimensions() int { return 768 }
 
 func (o *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	body, _ := json.Marshal(map[string]any{"model": o.model, "input": text, "dimensions": 768})

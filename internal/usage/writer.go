@@ -24,9 +24,7 @@ type Writer struct {
 	touch  chan string
 	closed atomic.Bool
 
-	droppedUsage atomic.Uint64
-	droppedAudit atomic.Uint64
-	onDrop       func(kind string)
+	onDrop func(kind string)
 }
 
 // Options configures queue sizes and flush cadence.
@@ -34,12 +32,14 @@ type Options struct {
 	QueueSize     int
 	BatchSize     int
 	FlushInterval time.Duration
-	AuditEnabled  bool
 	OnDrop        func(kind string)
 }
 
-// NewWriter creates a writer. Call Start before submitting records.
+// NewWriter creates a writer and starts its background flushers.
 func NewWriter(st *store.Store, log *slog.Logger, opts Options) *Writer {
+	if log == nil {
+		log = slog.Default()
+	}
 	if opts.QueueSize <= 0 {
 		opts.QueueSize = 20000
 	}
@@ -64,9 +64,6 @@ func NewWriter(st *store.Store, log *slog.Logger, opts Options) *Writer {
 	go w.touchLoop(15 * time.Second)
 	return w
 }
-
-// Start is a no-op retained for a symmetric lifecycle API.
-func (w *Writer) Start() {}
 
 // SubmitUsage enqueues one usage record without blocking.
 func (w *Writer) SubmitUsage(r store.UsageRecord) {
@@ -124,20 +121,13 @@ func (w *Writer) Close(ctx context.Context) error {
 	}
 }
 
-// Dropped returns counters for observability.
-func (w *Writer) Dropped() (usage, audit uint64) {
-	return w.droppedUsage.Load(), w.droppedAudit.Load()
-}
-
 func (w *Writer) dropUsage() {
-	w.droppedUsage.Add(1)
 	if w.onDrop != nil {
 		w.onDrop("usage")
 	}
 }
 
 func (w *Writer) dropAudit() {
-	w.droppedAudit.Add(1)
 	if w.onDrop != nil {
 		w.onDrop("audit")
 	}
@@ -159,10 +149,8 @@ func (w *Writer) usageLoop(batchSize int, interval time.Duration) {
 		span.End()
 		cancel()
 		if err != nil {
-			w.log.Error("usage flush failed", "records", len(merged), "error", err)
-			for range merged {
-				w.dropUsage()
-			}
+			w.log.Error("usage batch flush failed; retrying individually", "records", len(merged), "error", err)
+			w.retryUsage(merged)
 		}
 		buf = buf[:0]
 	}
@@ -207,10 +195,8 @@ func (w *Writer) auditLoop(batchSize int, interval time.Duration) {
 		span.End()
 		cancel()
 		if err != nil {
-			w.log.Error("audit flush failed", "records", len(buf), "error", err)
-			for range buf {
-				w.dropAudit()
-			}
+			w.log.Error("audit batch flush failed; retrying individually", "records", len(buf), "error", err)
+			w.retryAudit(buf)
 		}
 		buf = buf[:0]
 	}
@@ -297,4 +283,34 @@ func mergeUsage(in []store.UsageRecord) []store.UsageRecord {
 		out = append(out, m[k])
 	}
 	return out
+}
+
+func (w *Writer) retryUsage(records []store.UsageRecord) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, rec := range records {
+		if ctx.Err() != nil {
+			w.dropUsage()
+			continue
+		}
+		if err := w.store.InsertUsage(ctx, []store.UsageRecord{rec}); err != nil {
+			w.log.Warn("usage record dropped", "error", err)
+			w.dropUsage()
+		}
+	}
+}
+
+func (w *Writer) retryAudit(records []store.AuditRecord) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, rec := range records {
+		if ctx.Err() != nil {
+			w.dropAudit()
+			continue
+		}
+		if err := w.store.InsertAudit(ctx, []store.AuditRecord{rec}); err != nil {
+			w.log.Warn("audit record dropped", "error", err)
+			w.dropAudit()
+		}
+	}
 }

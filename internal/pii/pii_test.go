@@ -40,3 +40,11 @@ func TestLuhnRejectsInvalidCard(t *testing.T) {
 		t.Fatal("invalid Luhn number should not be redacted as a card")
 	}
 }
+
+func TestPhoneRedactionDoesNotTouchDates(t *testing.T) {
+	in := "timestamp 2026-11-20 16:25 and date 2026-11-20, order 123456789012345"
+	out, _ := RedactText(in)
+	if out != in {
+		t.Fatalf("date/order was modified: %q -> %q", in, out)
+	}
+}

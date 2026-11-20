@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // NewHTTPClient returns a tuned client for upstream providers. Redirects are
@@ -25,7 +27,7 @@ func NewHTTPClient() *http.Client {
 		ForceAttemptHTTP2:     true,
 	}
 	return &http.Client{
-		Transport: transport,
+		Transport: otelhttp.NewTransport(transport),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 1 {
 				return errors.New("upstream redirects are disabled")

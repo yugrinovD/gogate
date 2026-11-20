@@ -76,6 +76,17 @@ func (m *Manager) Success(name string) {
 	e.halfInFlight = false
 }
 
+// Release frees a half-open probe slot without changing the breaker state. It
+// is used when a request is cancelled before it can be classified.
+func (m *Manager) Release(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e := m.get(name)
+	if e.state == StateHalfOpen {
+		e.halfInFlight = false
+	}
+}
+
 // Failure records a pre-first-byte failure.
 func (m *Manager) Failure(name string) {
 	m.mu.Lock()

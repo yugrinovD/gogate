@@ -43,7 +43,7 @@ func TestAPIKeyAuth(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			snap := testSnapshot(t, key, tc.enabled, tc.expires)
-			h := APIKey(func() *control.Snapshot { return snap }, "0123456789abcdef", nil)(next)
+			h := APIKey(func() *control.Snapshot { return snap }, "0123456789abcdef", 256, nil)(next)
 			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 			if tc.token != "" {
 				req.Header.Set("Authorization", "Bearer "+tc.token)

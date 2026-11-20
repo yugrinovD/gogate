@@ -9,6 +9,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Metrics holds all gateway Prometheus collectors.
@@ -28,6 +31,7 @@ type Metrics struct {
 	usageDropped prometheus.Counter
 	auditDropped prometheus.Counter
 	budget       prometheus.Counter
+	pricingMiss  *prometheus.CounterVec
 }
 
 // NewMetrics creates and registers collectors.
@@ -88,11 +92,15 @@ func NewMetrics() *Metrics {
 			Name: "gogate_budget_exceeded_total",
 			Help: "Requests rejected by cost budgets.",
 		}),
+		pricingMiss: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gogate_pricing_missing_total",
+			Help: "Requests served without a configured model price.",
+		}, []string{"provider", "model"}),
 	}
 	reg.MustRegister(
 		m.requests, m.duration, m.tokens, m.cost, m.cacheHits, m.rateLimited,
 		m.upstreamErrs, m.inflight, m.retries, m.breaker, m.usageDropped,
-		m.auditDropped, m.budget,
+		m.auditDropped, m.budget, m.pricingMiss,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -163,6 +171,11 @@ func (m *Metrics) IncAuditDropped() { m.auditDropped.Inc() }
 // IncBudgetExceeded records a budget rejection.
 func (m *Metrics) IncBudgetExceeded() { m.budget.Inc() }
 
+// IncPricingMissing records a request without a configured model price.
+func (m *Metrics) IncPricingMissing(providerName, model string) {
+	m.pricingMiss.WithLabelValues(providerName, model).Inc()
+}
+
 // Middleware tracks in-flight requests and optional traces.
 func (m *Metrics) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -175,10 +188,11 @@ func (m *Metrics) Middleware(next http.Handler) http.Handler {
 // Registry exposes the registry for tests.
 func (m *Metrics) Registry() *prometheus.Registry { return m.registry }
 
-// TraceMiddleware starts a span for each HTTP request.
+// TraceMiddleware extracts incoming W3C context and starts a server span.
 func TraceMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, span := Tracer().Start(r.Context(), "http.request")
+		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		ctx, span := Tracer().Start(ctx, "http.request", trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

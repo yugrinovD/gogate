@@ -19,6 +19,13 @@ type BootstrapProvider struct {
 // BootstrapProviders inserts default providers without overwriting existing
 // admin-managed rows.
 func (s *Store) BootstrapProviders(ctx context.Context, providers []BootstrapProvider) error {
+	var existing int
+	if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM providers`).Scan(&existing); err != nil {
+		return err
+	}
+	if existing > 0 {
+		return nil
+	}
 	for _, p := range providers {
 		if len(p.Models) == 0 {
 			continue

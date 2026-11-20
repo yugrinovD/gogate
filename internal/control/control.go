@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/yugrinovD/gogate/internal/provider"
 	"github.com/yugrinovD/gogate/internal/provider/registry"
+	"github.com/yugrinovD/gogate/internal/security"
 	"github.com/yugrinovD/gogate/internal/store"
 )
 
@@ -61,41 +63,34 @@ type Snapshot struct {
 	LoadedAt     time.Time
 }
 
-// EffectiveQuotas returns the key quota, the tenant quota, or both.
-func (s *Snapshot) EffectiveQuotas(tenantID, keyID string) []Quota {
-	var out []Quota
-	if q, ok := s.TenantQuotas[tenantID]; ok {
-		out = append(out, q)
-	}
-	if q, ok := s.KeyQuotas[keyID]; ok {
-		out = append(out, q)
-	}
-	return out
-}
-
-// PriceFor returns the configured price, or zeroes when unknown.
-func (s *Snapshot) PriceFor(providerName, model string) Price {
+// PriceFor returns the configured price and whether a price row exists.
+func (s *Snapshot) PriceFor(providerName, model string) (Price, bool) {
 	if p, ok := s.Prices[providerName+"\x00"+model]; ok {
-		return p
+		return p, true
 	}
-	return Price{Provider: providerName, Model: model}
+	return Price{Provider: providerName, Model: model}, false
 }
 
 // Manager reloads the control plane snapshot.
 type Manager struct {
-	store        *store.Store
-	log          *slog.Logger
-	allowPrivate bool
-	httpClient   *http.Client
-	snap         atomic.Pointer[Snapshot]
+	store          *store.Store
+	log            *slog.Logger
+	allowPrivate   bool
+	upstreamPrefix string
+	httpClient     *http.Client
+	snap           atomic.Pointer[Snapshot]
+	reloadMu       sync.Mutex
 }
 
 // NewManager creates a manager.
-func NewManager(st *store.Store, log *slog.Logger, allowPrivate bool, httpClient *http.Client) *Manager {
+func NewManager(st *store.Store, log *slog.Logger, allowPrivate bool, httpClient *http.Client, upstreamPrefix string) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
-	m := &Manager{store: st, log: log, allowPrivate: allowPrivate, httpClient: httpClient}
+	if upstreamPrefix == "" {
+		upstreamPrefix = "GOGATE_UPSTREAM_"
+	}
+	m := &Manager{store: st, log: log, allowPrivate: allowPrivate, upstreamPrefix: upstreamPrefix, httpClient: httpClient}
 	empty := &Snapshot{
 		KeysByPrefix: map[string]Key{},
 		Tenants:      map[string]Tenant{},
@@ -114,6 +109,8 @@ func (m *Manager) Snapshot() *Snapshot { return m.snap.Load() }
 
 // Reload reads all control-plane rows and atomically swaps the snapshot.
 func (m *Manager) Reload(ctx context.Context) error {
+	m.reloadMu.Lock()
+	defer m.reloadMu.Unlock()
 	start := time.Now()
 	tenants, err := m.store.ListTenants(ctx)
 	if err != nil {
@@ -174,6 +171,10 @@ func (m *Manager) Reload(ctx context.Context) error {
 		}
 		apiKey := ""
 		if p.APIKeyEnv != "" {
+			if err := security.ValidateEnvName(p.APIKeyEnv, m.upstreamPrefix); err != nil {
+				m.log.Warn("provider skipped: unsafe api_key_env", "provider", p.Name, "error", err)
+				continue
+			}
 			apiKey = os.Getenv(p.APIKeyEnv)
 		}
 		configs = append(configs, provider.Config{

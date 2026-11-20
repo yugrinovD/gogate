@@ -16,7 +16,7 @@ import (
 type SnapshotProvider func() *control.Snapshot
 
 // APIKey authenticates public API requests using a hashed key.
-func APIKey(snapshot SnapshotProvider, pepper string, onAuth func(reqctx.Identity)) func(http.Handler) http.Handler {
+func APIKey(snapshot SnapshotProvider, pepper string, maxKeyBytes int, onAuth func(reqctx.Identity)) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token := bearerToken(r)
@@ -25,7 +25,7 @@ func APIKey(snapshot SnapshotProvider, pepper string, onAuth func(reqctx.Identit
 				apierr.Unauthorized(w, r, "invalid_api_key", "missing API key")
 				return
 			}
-			prefix, secret, err := security.ParseKey(token)
+			prefix, secret, err := security.ParseKeyLimited(token, maxKeyBytes)
 			if err != nil {
 				apierr.Unauthorized(w, r, "invalid_api_key", "invalid API key")
 				return

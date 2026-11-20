@@ -24,6 +24,6 @@ Redis используется для лимитов, квот и exact cache. �
 
 - Hot path не зависит от latency PostgreSQL.
 - Несколько экземпляров работают с общим control plane.
-- Изменения в БД, сделанные в обход API, требуют `POST /admin/v1/reload` или
-  периодического reload (в текущей версии — admin reload).
+- Изменения в БД, сделанные в обход API, подхватываются периодическим reload
+  (`GOGATE_CONTROL_RELOAD_INTERVAL`) или `POST /admin/v1/reload`.
 - Snapshot должен быть потокобезопасным и атомарно заменяемым.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/yugrinovD/gogate/internal/apierr"
 	"github.com/yugrinovD/gogate/internal/cache"
@@ -95,10 +97,16 @@ func (h *Handler) Register(mux *http.ServeMux) {
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
+	dbStatus := componentPing(ctx, h.store.Ping)
+	redisStatus := componentPing(ctx, func(context.Context) error { return h.redis.Ping(ctx).Err() })
+	code := http.StatusOK
+	if !boolField(dbStatus, "ok") || !boolField(redisStatus, "ok") {
+		code = http.StatusServiceUnavailable
+	}
 	status := map[string]any{
 		"version":   version.String(),
-		"database":  componentPing(ctx, h.store.Ping),
-		"redis":     componentPing(ctx, func(context.Context) error { return h.redis.Ping(ctx).Err() }),
+		"database":  dbStatus,
+		"redis":     redisStatus,
 		"providers": []any{},
 		"breakers":  h.orch.Breakers().Snapshot(),
 	}
@@ -113,7 +121,12 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		status["providers"] = providers
 		status["problems"] = snap.Providers.Problems()
 	}
-	writeJSON(w, http.StatusOK, status)
+	writeJSON(w, code, status)
+}
+
+func boolField(m map[string]any, key string) bool {
+	v, _ := m[key].(bool)
+	return v
 }
 
 func componentPing(ctx context.Context, fn func(context.Context) error) map[string]any {
@@ -142,6 +155,10 @@ func (h *Handler) reload(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) reloadQuiet(ctx context.Context) {
 	if err := h.control.Reload(ctx); err != nil {
 		h.log.Error("control plane reload failed", "error", err)
+		return
+	}
+	if err := control.PublishReload(ctx, h.redis); err != nil {
+		h.log.Warn("control plane reload notification failed", "error", err)
 	}
 }
 
@@ -175,6 +192,9 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) deleteTenant(w http.ResponseWriter, r *http.Request) {
+	if !validateID(w, r, r.PathValue("id")) {
+		return
+	}
 	if err := h.store.DeleteTenant(r.Context(), r.PathValue("id")); err != nil {
 		notFoundOr500(w, r, err, "delete tenant failed")
 		return
@@ -205,6 +225,13 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		apierr.BadRequest(w, r, "invalid_key", "tenant_id and name are required")
 		return
 	}
+	if !validateID(w, r, in.TenantID) {
+		return
+	}
+	if _, err := h.store.GetTenant(r.Context(), in.TenantID); err != nil {
+		notFoundOr500(w, r, err, "tenant not found")
+		return
+	}
 	mat, err := security.GenerateKey(h.cfg.Env, h.cfg.Pepper)
 	if err != nil {
 		apierr.Internal(w, r, "generate key failed")
@@ -227,6 +254,9 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateKey(w http.ResponseWriter, r *http.Request) {
+	if !validateID(w, r, r.PathValue("id")) {
+		return
+	}
 	var in struct {
 		Enabled *bool `json:"enabled"`
 	}
@@ -246,6 +276,9 @@ func (h *Handler) updateKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) deleteKey(w http.ResponseWriter, r *http.Request) {
+	if !validateID(w, r, r.PathValue("id")) {
+		return
+	}
 	if err := h.store.DeleteAPIKey(r.Context(), r.PathValue("id")); err != nil {
 		notFoundOr500(w, r, err, "delete key failed")
 		return
@@ -296,6 +329,63 @@ func (in providerInput) toStore() store.Provider {
 	}
 }
 
+type providerPatch struct {
+	Name       *string          `json:"name"`
+	Kind       *string          `json:"kind"`
+	BaseURL    *string          `json:"base_url"`
+	APIKeyEnv  *string          `json:"api_key_env"`
+	Models     *[]string        `json:"models"`
+	Priority   *int             `json:"priority"`
+	Enabled    *bool            `json:"enabled"`
+	TimeoutMS  *int             `json:"timeout_ms"`
+	MaxRetries *int             `json:"max_retries"`
+	Config     *json.RawMessage `json:"config"`
+}
+
+func (in providerPatch) apply(existing store.Provider) (store.Provider, error) {
+	p := existing
+	if in.Name != nil && *in.Name != existing.Name {
+		return p, fmt.Errorf("provider name is immutable; create a new provider instead")
+	}
+	if in.Kind != nil {
+		p.Kind = *in.Kind
+	}
+	if in.BaseURL != nil {
+		p.BaseURL = *in.BaseURL
+	}
+	if in.APIKeyEnv != nil {
+		p.APIKeyEnv = *in.APIKeyEnv
+	}
+	if in.Models != nil {
+		p.Models = append([]string(nil), (*in.Models)...)
+	}
+	if in.Priority != nil {
+		p.Priority = *in.Priority
+	}
+	if in.Enabled != nil {
+		p.Enabled = *in.Enabled
+	}
+	if in.TimeoutMS != nil {
+		if *in.TimeoutMS <= 0 {
+			return p, fmt.Errorf("timeout_ms must be positive")
+		}
+		p.TimeoutMS = *in.TimeoutMS
+	}
+	if in.MaxRetries != nil {
+		p.MaxRetries = *in.MaxRetries
+	}
+	if in.Config != nil {
+		p.Config = *in.Config
+	}
+	if len(p.Config) == 0 {
+		p.Config = json.RawMessage(`{}`)
+	}
+	if p.TimeoutMS <= 0 {
+		p.TimeoutMS = 30000
+	}
+	return p, nil
+}
+
 func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 	var in providerInput
 	if !decode(w, r, &in) {
@@ -304,6 +394,10 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 	p := in.toStore()
 	if err := store.ValidateProvider(p); err != nil {
 		apierr.BadRequest(w, r, "invalid_provider", err.Error())
+		return
+	}
+	if err := security.ValidateEnvName(p.APIKeyEnv, h.cfg.UpstreamKeyEnvPrefix); err != nil {
+		apierr.BadRequest(w, r, "invalid_api_key_env", err.Error())
 		return
 	}
 	if p.Kind != "mock" {
@@ -322,13 +416,30 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request) {
-	var in providerInput
+	id := r.PathValue("id")
+	if !validateID(w, r, id) {
+		return
+	}
+	var in providerPatch
 	if !decode(w, r, &in) {
 		return
 	}
-	p := in.toStore()
+	existing, err := h.store.GetProvider(r.Context(), id)
+	if err != nil {
+		notFoundOr500(w, r, err, "provider not found")
+		return
+	}
+	p, err := in.apply(existing)
+	if err != nil {
+		apierr.BadRequest(w, r, "invalid_provider", err.Error())
+		return
+	}
 	if err := store.ValidateProvider(p); err != nil {
 		apierr.BadRequest(w, r, "invalid_provider", err.Error())
+		return
+	}
+	if err := security.ValidateEnvName(p.APIKeyEnv, h.cfg.UpstreamKeyEnvPrefix); err != nil {
+		apierr.BadRequest(w, r, "invalid_api_key_env", err.Error())
 		return
 	}
 	if p.Kind != "mock" {
@@ -337,7 +448,7 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	out, err := h.store.UpdateProvider(r.Context(), r.PathValue("id"), p)
+	out, err := h.store.UpdateProvider(r.Context(), id, p)
 	if err != nil {
 		notFoundOr500(w, r, err, "update provider failed")
 		return
@@ -347,6 +458,9 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request) {
+	if !validateID(w, r, r.PathValue("id")) {
+		return
+	}
 	if err := h.store.DeleteProvider(r.Context(), r.PathValue("id")); err != nil {
 		notFoundOr500(w, r, err, "delete provider failed")
 		return
@@ -357,6 +471,9 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) testProvider(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !validateID(w, r, id) {
+		return
+	}
 	p, err := h.store.GetProvider(r.Context(), id)
 	if err != nil {
 		notFoundOr500(w, r, err, "provider not found")
@@ -396,6 +513,31 @@ func (h *Handler) upsertQuota(w http.ResponseWriter, r *http.Request) {
 		apierr.BadRequest(w, r, "invalid_quota", "tenant_id is required")
 		return
 	}
+	if !validateID(w, r, in.TenantID) {
+		return
+	}
+	if _, err := h.store.GetTenant(r.Context(), in.TenantID); err != nil {
+		notFoundOr500(w, r, err, "tenant not found")
+		return
+	}
+	if in.APIKeyID != nil {
+		if !validateID(w, r, *in.APIKeyID) {
+			return
+		}
+		key, err := h.store.GetAPIKeyByID(r.Context(), *in.APIKeyID)
+		if err != nil {
+			notFoundOr500(w, r, err, "api key not found")
+			return
+		}
+		if key.TenantID != in.TenantID {
+			apierr.BadRequest(w, r, "invalid_quota", "api_key_id belongs to another tenant")
+			return
+		}
+	}
+	if err := validateQuota(in); err != nil {
+		apierr.BadRequest(w, r, "invalid_quota", err.Error())
+		return
+	}
 	out, err := h.store.UpsertQuota(r.Context(), in)
 	if err != nil {
 		apierr.Internal(w, r, "upsert quota failed")
@@ -406,6 +548,9 @@ func (h *Handler) upsertQuota(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) deleteQuota(w http.ResponseWriter, r *http.Request) {
+	if !validateID(w, r, r.PathValue("id")) {
+		return
+	}
 	if err := h.store.DeleteQuota(r.Context(), r.PathValue("id")); err != nil {
 		notFoundOr500(w, r, err, "delete quota failed")
 		return
@@ -432,6 +577,10 @@ func (h *Handler) upsertPrice(w http.ResponseWriter, r *http.Request) {
 		apierr.BadRequest(w, r, "invalid_price", "provider and model are required")
 		return
 	}
+	if in.InputUSDPer1M < 0 || in.OutputUSDPer1M < 0 {
+		apierr.BadRequest(w, r, "invalid_price", "prices must be non-negative")
+		return
+	}
 	out, err := h.store.UpsertPrice(r.Context(), in)
 	if err != nil {
 		apierr.Internal(w, r, "upsert price failed")
@@ -442,6 +591,9 @@ func (h *Handler) upsertPrice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) deletePrice(w http.ResponseWriter, r *http.Request) {
+	if !validateID(w, r, r.PathValue("id")) {
+		return
+	}
 	if err := h.store.DeletePrice(r.Context(), r.PathValue("id")); err != nil {
 		notFoundOr500(w, r, err, "delete price failed")
 		return
@@ -451,8 +603,16 @@ func (h *Handler) deletePrice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
-	to := parseDate(r.URL.Query().Get("to"), time.Now().UTC())
-	from := parseDate(r.URL.Query().Get("from"), to.AddDate(0, 0, -7))
+	to, err := parseDate(r.URL.Query().Get("to"), time.Now().UTC())
+	if err != nil {
+		apierr.BadRequest(w, r, "invalid_date", "to must be YYYY-MM-DD")
+		return
+	}
+	from, err := parseDate(r.URL.Query().Get("from"), to.AddDate(0, 0, -7))
+	if err != nil {
+		apierr.BadRequest(w, r, "invalid_date", "from must be YYYY-MM-DD")
+		return
+	}
 	items, err := h.store.Usage(r.Context(), from, to, r.URL.Query().Get("tenant_id"))
 	if err != nil {
 		apierr.Internal(w, r, "usage query failed")
@@ -462,8 +622,16 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) audit(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	limit, err := intQuery(r, "limit", 100, 1, 500)
+	if err != nil {
+		apierr.BadRequest(w, r, "invalid_limit", err.Error())
+		return
+	}
+	offset, err := intQuery(r, "offset", 0, 0, 1_000_000)
+	if err != nil {
+		apierr.BadRequest(w, r, "invalid_offset", err.Error())
+		return
+	}
 	items, err := h.store.ListAudit(r.Context(), r.URL.Query().Get("tenant_id"), limit, offset)
 	if err != nil {
 		apierr.Internal(w, r, "audit query failed")
@@ -504,6 +672,11 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(v); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			apierr.Write(w, r, http.StatusRequestEntityTooLarge, "invalid_request_error", "request_too_large", "request body is too large")
+			return false
+		}
 		apierr.BadRequest(w, r, "invalid_json", "invalid JSON body")
 		return false
 	}
@@ -515,15 +688,60 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-func parseDate(s string, def time.Time) time.Time {
+func parseDate(s string, def time.Time) (time.Time, error) {
 	if s == "" {
-		return def
+		return def, nil
 	}
 	t, err := time.Parse("2006-01-02", s)
 	if err != nil {
-		return def
+		return time.Time{}, err
 	}
-	return t
+	return t, nil
+}
+
+func intQuery(r *http.Request, key string, def, min, max int) (int, error) {
+	raw := r.URL.Query().Get(key)
+	if raw == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < min || n > max {
+		return 0, fmt.Errorf("%s must be an integer between %d and %d", key, min, max)
+	}
+	return n, nil
+}
+
+func validateID(w http.ResponseWriter, r *http.Request, id string) bool {
+	if _, err := uuid.Parse(id); err != nil {
+		apierr.BadRequest(w, r, "invalid_id", "invalid UUID")
+		return false
+	}
+	return true
+}
+
+func validateQuota(q store.Quota) error {
+	negative := func(name string, v *int) error {
+		if v != nil && *v < 0 {
+			return fmt.Errorf("%s must be non-negative", name)
+		}
+		return nil
+	}
+	if err := negative("rpm", q.RPM); err != nil {
+		return err
+	}
+	if err := negative("tpm", q.TPM); err != nil {
+		return err
+	}
+	if q.DailyRequests != nil && *q.DailyRequests < 0 {
+		return fmt.Errorf("daily_requests must be non-negative")
+	}
+	if q.DailyTokens != nil && *q.DailyTokens < 0 {
+		return fmt.Errorf("daily_tokens must be non-negative")
+	}
+	if q.MonthlyCostUSD != nil && *q.MonthlyCostUSD < 0 {
+		return fmt.Errorf("monthly_cost_usd must be non-negative")
+	}
+	return nil
 }
 
 func notFoundOr500(w http.ResponseWriter, r *http.Request, err error, msg string) {

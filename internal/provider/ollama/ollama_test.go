@@ -34,6 +34,7 @@ func TestChatStream(t *testing.T) {
 	defer func() { _ = s.Close() }()
 	var text string
 	var usage *provider.Usage
+	var firstID string
 	for {
 		c, err := s.Next(context.Background())
 		if errors.Is(err, io.EOF) {
@@ -41,6 +42,11 @@ func TestChatStream(t *testing.T) {
 		}
 		if err != nil {
 			t.Fatal(err)
+		}
+		if firstID == "" {
+			firstID = c.ID
+		} else if c.ID != firstID {
+			t.Fatalf("stream id changed: %q -> %q", firstID, c.ID)
 		}
 		text += c.Content
 		if c.Usage != nil {

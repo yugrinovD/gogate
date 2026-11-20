@@ -44,8 +44,10 @@ Full list: [.env.example](../.env.example). Main groups:
 | Listeners | `GOGATE_PUBLIC_ADDR`, `GOGATE_ADMIN_ADDR`, `GOGATE_ADMIN_TOKEN` |
 | Secrets | `GOGATE_API_KEY_PEPPER`, upstream keys via `*_API_KEY` |
 | Storage | `GOGATE_DATABASE_URL`, `GOGATE_REDIS_*` |
-| Limits | `GOGATE_MAX_BODY_BYTES`, `GOGATE_MAX_OUTPUT_TOKENS`, `GOGATE_MAX_MESSAGES` |
+| Upstream env | `GOGATE_UPSTREAM_KEY_PREFIX`, `GOGATE_OPENAI_KEY_ENV` |
+| Limits | `GOGATE_MAX_BODY_BYTES`, `GOGATE_MAX_OUTPUT_TOKENS`, `GOGATE_MAX_MESSAGES`, `GOGATE_MAX_INFLIGHT`, `GOGATE_MAX_API_KEY_BYTES` |
 | Timeouts | `GOGATE_REQUEST_TIMEOUT`, `GOGATE_FIRST_BYTE_TIMEOUT`, `GOGATE_STREAM_IDLE_TIMEOUT` |
+| Replicas | `GOGATE_CONTROL_RELOAD_INTERVAL` |
 | Cache | `GOGATE_CACHE_*`, `GOGATE_SEMANTIC_CACHE_*`, `GOGATE_EMBEDDING_*` |
 | Limits/P2 | `GOGATE_RATE_LIMIT_*`, `GOGATE_PII_REDACT`, `GOGATE_BUDGET_ENABLED`, `GOGATE_AUDIT_*` |
 | Observability | `GOGATE_METRICS_ENABLED`, `GOGATE_TRACING_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `GOGATE_LOG_LEVEL`, `GOGATE_ACCESS_LOG_SAMPLE` |
@@ -74,9 +76,12 @@ curl -s -X POST localhost:9090/admin/v1/cache/purge -H "$AUTH" \
   -H 'Content-Type: application/json' -d '{"exact":true}' | jq
 ```
 
-Mutations rebuild the in-memory snapshot automatically. `POST /reload` is needed
-when a provider appears/disappears in DNS (for example, the Ollama container was
-started after gogate) or when the control plane was changed directly in the database.
+Mutations rebuild the in-memory snapshot and publish a Redis notification. Each
+replica also reloads the control plane periodically
+(`GOGATE_CONTROL_RELOAD_INTERVAL`, 30s by default), so key revocation reaches all
+replicas within that interval. `POST /reload` is needed when a provider
+appears/disappears in DNS (for example, the Ollama container was started after
+gogate) or when the control plane was changed directly in the database.
 
 ## Hot reload and Ollama
 

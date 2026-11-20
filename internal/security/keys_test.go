@@ -49,3 +49,27 @@ func TestGeneratedKeysAreUnique(t *testing.T) {
 		seen[mat.Plaintext] = true
 	}
 }
+
+func TestParseKeyLimited(t *testing.T) {
+	mat, err := GenerateKey("test", "pepper-value-at-least-16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ParseKeyLimited(mat.Plaintext, 32); err == nil {
+		t.Fatal("expected key length rejection")
+	}
+	if _, _, err := ParseKeyLimited(mat.Plaintext, 256); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateEnvName(t *testing.T) {
+	if err := ValidateEnvName("GOGATE_UPSTREAM_OPENAI_KEY", "GOGATE_UPSTREAM_"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"GOGATE_API_KEY_PEPPER", "AWS_SECRET_ACCESS_KEY", "GOGATE_UPSTREAM_bad-name"} {
+		if err := ValidateEnvName(name, "GOGATE_UPSTREAM_"); err == nil {
+			t.Fatalf("expected rejection for %s", name)
+		}
+	}
+}

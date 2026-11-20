@@ -89,9 +89,9 @@ data: [DONE]
 | 404 | `model_not_found` | модель не сконфигурирована |
 | 413 | `request_too_large` | превышен body limit |
 | 429 | `rate_limit_exceeded`, `insufficient_quota` | RPM/TPM/квота/бюджет |
-| 502 | `upstream_error` | все провайдеры упали до первого байта |
+| 502 | `upstream_error` | upstream 5xx/network или ошибка конфигурации auth |
 | 503 | `all_providers_unavailable` | все breaker'ы открыты |
-| 504 | `upstream_timeout` | таймаут первого байта |
+| 504 | `upstream_timeout` | таймаут первого байта или idle стрима |
 
 ## Admin API
 
@@ -109,7 +109,7 @@ data: [DONE]
 | GET/POST | `/admin/v1/keys` | список/создание ключа |
 | PATCH/DELETE | `/admin/v1/keys/{id}` | enable/disable/delete |
 | GET/POST | `/admin/v1/providers` | список/создание провайдера |
-| PATCH/DELETE | `/admin/v1/providers/{id}` | изменение/удаление |
+| PATCH/DELETE | `/admin/v1/providers/{id}` | частичное изменение; name immutable / удаление |
 | POST | `/admin/v1/providers/{id}/test` | health check провайдера |
 | GET/POST | `/admin/v1/quotas` | список/upsert квоты |
 | DELETE | `/admin/v1/quotas/{id}` | удалить квоту |

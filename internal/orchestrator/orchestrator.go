@@ -27,7 +27,14 @@ var (
 	ErrAllProvidersUnavailable = errors.New("all providers unavailable")
 	// ErrUpstreamFailed means all provider attempts failed before the first byte.
 	ErrUpstreamFailed = errors.New("all providers failed")
+	// ErrFirstByteTimeout means the upstream did not produce a first chunk in time.
+	ErrFirstByteTimeout = errors.New("first byte timeout")
+	// ErrStreamIdle means an established upstream stream stopped producing chunks.
+	ErrStreamIdle  = errors.New("upstream stream idle")
+	errBreakerOpen = errors.New("provider breaker is open")
 )
+
+const maxProviderRetries = 5
 
 // Observer receives orchestration events for metrics/logging.
 type Observer interface {
@@ -45,6 +52,7 @@ type Orchestrator struct {
 	manager    SnapshotProvider
 	breakers   *breaker.Manager
 	firstByte  time.Duration
+	streamIdle time.Duration
 	log        *slog.Logger
 	observer   Observer
 	backoff    time.Duration
@@ -53,19 +61,23 @@ type Orchestrator struct {
 
 // Options configures an orchestrator.
 type Options struct {
-	FirstByteTimeout time.Duration
-	BreakerThreshold int
-	BreakerCooldown  time.Duration
-	BackoffBase      time.Duration
-	BackoffMax       time.Duration
-	Logger           *slog.Logger
-	Observer         Observer
+	FirstByteTimeout  time.Duration
+	StreamIdleTimeout time.Duration
+	BreakerThreshold  int
+	BreakerCooldown   time.Duration
+	BackoffBase       time.Duration
+	BackoffMax        time.Duration
+	Logger            *slog.Logger
+	Observer          Observer
 }
 
 // New creates an orchestrator.
 func New(manager SnapshotProvider, opts Options) *Orchestrator {
 	if opts.FirstByteTimeout <= 0 {
 		opts.FirstByteTimeout = 30 * time.Second
+	}
+	if opts.StreamIdleTimeout <= 0 {
+		opts.StreamIdleTimeout = 60 * time.Second
 	}
 	if opts.BackoffBase <= 0 {
 		opts.BackoffBase = 100 * time.Millisecond
@@ -80,6 +92,7 @@ func New(manager SnapshotProvider, opts Options) *Orchestrator {
 		manager:    manager,
 		breakers:   breaker.New(opts.BreakerThreshold, opts.BreakerCooldown),
 		firstByte:  opts.FirstByteTimeout,
+		streamIdle: opts.StreamIdleTimeout,
 		log:        opts.Logger,
 		observer:   opts.Observer,
 		backoff:    opts.BackoffBase,
@@ -94,9 +107,11 @@ func (o *Orchestrator) Breakers() *breaker.Manager { return o.breakers }
 // first byte has been received, so fallback is no longer allowed.
 type Session struct {
 	stream   provider.Stream
+	ctx      context.Context
 	cancel   context.CancelFunc
 	provider string
 	pending  *provider.Chunk
+	idle     time.Duration
 	closed   bool
 }
 
@@ -104,6 +119,8 @@ type Session struct {
 func (s *Session) Provider() string { return s.provider }
 
 // Next returns the pending first chunk and then delegates to the provider.
+// Once the stream is committed, an idle upstream is aborted rather than held
+// forever.
 func (s *Session) Next(ctx context.Context) (provider.Chunk, error) {
 	if s.closed {
 		return provider.Chunk{}, io.EOF
@@ -113,7 +130,23 @@ func (s *Session) Next(ctx context.Context) (provider.Chunk, error) {
 		s.pending = nil
 		return c, nil
 	}
-	chunk, err := s.stream.Next(ctx)
+	runCtx := s.ctx
+	if runCtx == nil {
+		runCtx = ctx
+	}
+	if s.idle <= 0 {
+		return s.stream.Next(runCtx)
+	}
+	timer := time.AfterFunc(s.idle, s.cancel)
+	chunk, err := s.stream.Next(runCtx)
+	if !timer.Stop() {
+		if ctx.Err() != nil {
+			return chunk, ctx.Err()
+		}
+		_ = s.stream.Close()
+		s.closed = true
+		return chunk, fmt.Errorf("%w after %s", ErrStreamIdle, s.idle)
+	}
 	if err != nil && !errors.Is(err, io.EOF) {
 		return chunk, err
 	}
@@ -154,91 +187,18 @@ func (o *Orchestrator) Open(ctx context.Context, req provider.Request) (*Session
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if !o.breakers.Allow(p.Name()) {
+		sess, err := o.tryProvider(ctx, p, configs[p.Name()], req)
+		if err == nil {
+			return sess, nil
+		}
+		if errors.Is(err, errBreakerOpen) {
 			continue
 		}
 		attempted = true
-		cfg := configs[p.Name()]
-		maxAttempts := cfg.MaxRetries + 1
-		if maxAttempts < 1 {
-			maxAttempts = 1
+		if isClientCanceled(ctx, err) {
+			return nil, err
 		}
-		firstByte := cfg.Timeout
-		if firstByte <= 0 || firstByte > o.firstByte {
-			firstByte = o.firstByte
-		}
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			if attempt > 0 {
-				if o.observer != nil {
-					o.observer.ProviderRetry(p.Name(), attempt)
-				}
-				if err := o.waitBackoff(ctx, attempt); err != nil {
-					return nil, err
-				}
-			}
-			attemptCtx, attemptSpan := otel.Tracer("gogate").Start(ctx, "provider.open",
-				traceAttrs(p.Name(), req.Model)...)
-			streamCtx, cancel := context.WithCancel(attemptCtx)
-			timer := time.AfterFunc(firstByte, cancel)
-			stream, err := p.Chat(streamCtx, req)
-			if err != nil {
-				timer.Stop()
-				cancel()
-				attemptSpan.RecordError(err)
-				attemptSpan.End()
-				if isClientCanceled(ctx, err) {
-					return nil, err
-				}
-				o.breakers.Failure(p.Name())
-				if o.observer != nil {
-					o.observer.ProviderFailure(p.Name(), err)
-				}
-				lastErr = err
-				if !retryable(err) {
-					break
-				}
-				continue
-			}
-			chunk, err := stream.Next(streamCtx)
-			stopped := timer.Stop()
-			if err != nil {
-				_ = stream.Close()
-				cancel()
-				attemptSpan.RecordError(err)
-				attemptSpan.End()
-				if isClientCanceled(ctx, err) {
-					return nil, err
-				}
-				o.breakers.Failure(p.Name())
-				if o.observer != nil {
-					o.observer.ProviderFailure(p.Name(), err)
-				}
-				lastErr = err
-				if !retryable(err) {
-					break
-				}
-				continue
-			}
-			if !stopped && streamCtx.Err() != nil {
-				_ = stream.Close()
-				cancel()
-				lastErr = fmt.Errorf("%w: first byte timeout", ErrUpstreamFailed)
-				attemptSpan.RecordError(lastErr)
-				attemptSpan.End()
-				o.breakers.Failure(p.Name())
-				continue
-			}
-			o.breakers.Success(p.Name())
-			attemptSpan.SetAttributes(attribute.Bool("committed", true))
-			attemptSpan.End()
-			return &Session{
-				stream:   stream,
-				cancel:   cancel,
-				provider: p.Name(),
-				pending:  &chunk,
-			}, nil
-		}
-		// This provider is exhausted; try the next candidate.
+		lastErr = err
 	}
 	if !attempted {
 		return nil, ErrAllProvidersUnavailable
@@ -249,10 +209,149 @@ func (o *Orchestrator) Open(ctx context.Context, req provider.Request) (*Session
 	return nil, fmt.Errorf("%w: %w", ErrUpstreamFailed, lastErr)
 }
 
-func (o *Orchestrator) waitBackoff(ctx context.Context, attempt int) error {
+func (o *Orchestrator) tryProvider(ctx context.Context, p provider.Provider, cfg provider.Config, req provider.Request) (*Session, error) {
+	if !o.breakers.Allow(p.Name()) {
+		return nil, errBreakerOpen
+	}
+	resolved := false
+	defer func() {
+		if !resolved {
+			o.breakers.Release(p.Name())
+		}
+	}()
+
+	maxAttempts := cfg.MaxRetries + 1
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	if maxAttempts > maxProviderRetries+1 {
+		maxAttempts = maxProviderRetries + 1
+	}
+	firstByte := cfg.Timeout
+	if firstByte <= 0 || firstByte > o.firstByte {
+		firstByte = o.firstByte
+	}
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if attempt > 0 {
+			if o.observer != nil {
+				o.observer.ProviderRetry(p.Name(), attempt)
+			}
+			if err := o.waitBackoff(ctx, attempt, retryAfterFrom(lastErr)); err != nil {
+				return nil, err
+			}
+		}
+		attemptCtx, attemptSpan := otel.Tracer("gogate").Start(ctx, "provider.open",
+			traceAttrs(p.Name(), req.Model)...)
+		streamCtx, cancel := context.WithCancel(attemptCtx)
+		timer := time.AfterFunc(firstByte, cancel)
+		stream, err := p.Chat(streamCtx, req)
+		if err != nil {
+			stopped := timer.Stop()
+			cancel()
+			lastErr = err
+			if !stopped && ctx.Err() == nil {
+				lastErr = fmt.Errorf("%w after %s", ErrFirstByteTimeout, firstByte)
+			}
+			attemptSpan.RecordError(lastErr)
+			attemptSpan.End()
+			o.recordFailure(p.Name(), lastErr)
+			resolved = true
+			if o.observer != nil {
+				o.observer.ProviderFailure(p.Name(), lastErr)
+			}
+			if isClientCanceled(ctx, err) {
+				return nil, err
+			}
+			if errors.Is(lastErr, ErrFirstByteTimeout) || retryable(err) {
+				continue
+			}
+			o.log.Debug("provider returned a non-retryable error", "provider", p.Name(), "error", err)
+			break
+		}
+		chunk, err := stream.Next(streamCtx)
+		stopped := timer.Stop()
+		if err != nil {
+			_ = stream.Close()
+			cancel()
+			lastErr = err
+			if !stopped && ctx.Err() == nil {
+				lastErr = fmt.Errorf("%w after %s", ErrFirstByteTimeout, firstByte)
+			}
+			attemptSpan.RecordError(lastErr)
+			attemptSpan.End()
+			o.recordFailure(p.Name(), lastErr)
+			resolved = true
+			if o.observer != nil {
+				o.observer.ProviderFailure(p.Name(), lastErr)
+			}
+			if isClientCanceled(ctx, err) {
+				return nil, err
+			}
+			if errors.Is(lastErr, ErrFirstByteTimeout) || retryable(err) {
+				continue
+			}
+			break
+		}
+		if !stopped && streamCtx.Err() != nil {
+			_ = stream.Close()
+			cancel()
+			lastErr = fmt.Errorf("%w after %s", ErrFirstByteTimeout, firstByte)
+			attemptSpan.RecordError(lastErr)
+			attemptSpan.End()
+			o.breakers.Failure(p.Name())
+			resolved = true
+			if o.observer != nil {
+				o.observer.ProviderFailure(p.Name(), lastErr)
+			}
+			continue
+		}
+		o.breakers.Success(p.Name())
+		attemptSpan.SetAttributes(attribute.Bool("committed", true))
+		attemptSpan.End()
+		resolved = true
+		return &Session{
+			stream:   stream,
+			ctx:      streamCtx,
+			cancel:   cancel,
+			provider: p.Name(),
+			pending:  &chunk,
+			idle:     o.streamIdle,
+		}, nil
+	}
+	if lastErr == nil {
+		lastErr = ErrUpstreamFailed
+	}
+	return nil, lastErr
+}
+
+func (o *Orchestrator) recordFailure(providerName string, err error) {
+	switch {
+	case shouldTripBreaker(err):
+		o.breakers.Failure(providerName)
+	case isUpstream4xx(err):
+		// The provider answered; it is reachable and should not be penalised.
+		o.breakers.Success(providerName)
+	default:
+		o.breakers.Release(providerName)
+	}
+}
+
+func (o *Orchestrator) waitBackoff(ctx context.Context, attempt int, retryAfter time.Duration) error {
 	d := o.backoff << (attempt - 1)
 	if d > o.maxBackoff || d <= 0 {
 		d = o.maxBackoff
+	}
+	if retryAfter > 0 {
+		if retryAfter > o.maxBackoff {
+			retryAfter = o.maxBackoff
+		}
+		if retryAfter > d {
+			d = retryAfter
+		}
 	}
 	jitter := time.Duration(rand.Int64N(int64(d/2) + 1))
 	d = d/2 + jitter
@@ -275,6 +374,42 @@ func retryable(err error) bool {
 		return ue.Retryable()
 	}
 	return true
+}
+
+func shouldTripBreaker(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ue *provider.UpstreamError
+	if errors.As(err, &ue) {
+		if ue.StatusCode == 0 {
+			return true
+		}
+		if ue.StatusCode == 408 || ue.StatusCode == 425 || ue.StatusCode == 429 {
+			return true
+		}
+		return ue.StatusCode >= 500
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	return true
+}
+
+func isUpstream4xx(err error) bool {
+	var ue *provider.UpstreamError
+	if errors.As(err, &ue) {
+		return ue.StatusCode >= 400 && ue.StatusCode < 500
+	}
+	return false
+}
+
+func retryAfterFrom(err error) time.Duration {
+	var ue *provider.UpstreamError
+	if errors.As(err, &ue) {
+		return ue.RetryAfter
+	}
+	return 0
 }
 
 func isClientCanceled(ctx context.Context, err error) bool {

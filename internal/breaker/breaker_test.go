@@ -60,3 +60,18 @@ func TestHalfOpenFailureReopens(t *testing.T) {
 		t.Fatal("reopened breaker should reject")
 	}
 }
+
+func TestReleaseHalfOpenProbe(t *testing.T) {
+	now := time.Unix(3000, 0)
+	m := New(1, time.Second)
+	m.SetClock(func() time.Time { return now })
+	m.Failure("p")
+	now = now.Add(2 * time.Second)
+	if !m.Allow("p") {
+		t.Fatal("expected probe")
+	}
+	m.Release("p")
+	if !m.Allow("p") {
+		t.Fatal("release should free the probe slot")
+	}
+}

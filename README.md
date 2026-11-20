@@ -184,6 +184,10 @@ OpenAPI 3.1 (English): [public](api/openapi.public.yaml) · [admin](api/openapi.
 | `GOGATE_DATABASE_URL` | local DSN | PostgreSQL |
 | `GOGATE_REDIS_ADDR` | `127.0.0.1:6379` | Redis |
 | `GOGATE_MAX_OUTPUT_TOKENS` | `4096` | верхняя граница `max_tokens` |
+| `GOGATE_MAX_API_KEY_BYTES` | `256` | максимум длины API-ключа до хэширования |
+| `GOGATE_CONTROL_RELOAD_INTERVAL` | `30s` | периодический reload control plane для реплик |
+| `GOGATE_UPSTREAM_KEY_PREFIX` | `GOGATE_UPSTREAM_` | разрешённый префикс `api_key_env` |
+| `GOGATE_ALLOW_PRIVATE_UPSTREAMS` | `false` | private/loopback upstream; в demo-`.env` включён для Ollama |
 | `GOGATE_REQUEST_TIMEOUT` | `120s` | общий таймаут запроса |
 | `GOGATE_FIRST_BYTE_TIMEOUT` | `30s` | таймаут до первого байта |
 | `GOGATE_CACHE_ENABLED` | `true` | exact cache |
@@ -194,6 +198,7 @@ OpenAPI 3.1 (English): [public](api/openapi.public.yaml) · [admin](api/openapi.
 | `GOGATE_BUDGET_ENABLED` | `true` | месячные cost budgets |
 | `GOGATE_AUDIT_ENABLED` | `true` | audit метаданных запросов |
 | `GOGATE_TRACING_ENABLED` | `false` | OTLP-трейсы |
+| `GOGATE_TRACE_SAMPLE_RATIO` | `1` | sampling трейсов |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | например `http://jaeger:4318` |
 | `GOGATE_ACCESS_LOG_SAMPLE` | `1` | sampling access-логов |
 
@@ -229,7 +234,8 @@ OpenAPI 3.1 (English): [public](api/openapi.public.yaml) · [admin](api/openapi.
 `gogate_rate_limited_total`, `gogate_upstream_errors_total`,
 `gogate_inflight_requests`, `gogate_retries_total`,
 `gogate_circuit_breaker_state`, `gogate_usage_dropped_total`,
-`gogate_audit_dropped_total`, `gogate_budget_exceeded_total`.
+`gogate_audit_dropped_total`, `gogate_budget_exceeded_total`,
+`gogate_pricing_missing_total`.
 
 - Prometheus: `http://localhost:9092`
 - Grafana: `http://localhost:3000`, dashboard `gogate — AI gateway`
@@ -253,12 +259,12 @@ status, latency, tokens, cost, cache. Prompt/response и API-ключи не л�
 | Запросов | 30 001 |
 | RPS | 500.0 |
 | Ошибки | 0% |
-| p50 | 0.43 ms |
-| p95 | 0.53 ms |
-| p99 | 0.71 ms |
-| max | 43.0 ms |
+| p50 | 0.44 ms |
+| p95 | 0.56 ms |
+| p99 | 0.82 ms |
+| max | 7.35 ms |
 | Baseline mock-upstream, p99 | 0.21 ms |
-| Overhead p99 | ≈ 0.5 ms |
+| Overhead p99 | ≈ 0.62 ms |
 | RSS gogate под нагрузкой | ≈ 60 MiB |
 
 Железо: 16 vCPU, 31 GiB RAM, Debian 13, Docker 29.10. Цифры зависят от хоста;
@@ -310,19 +316,24 @@ docs/                       # RU/EN документация и ADR
 - Поддерживается текстовый chat. Tools/function calling, изображения, аудио и
   embeddings как публичный API не входят в текущий scope (embeddings
   используются только внутри semantic cache).
-- Semantic cache требует pgvector и embedder; mock-embedder предназначен для
-  demo/тестов, для качества нужен Ollama/OpenAI-compatible embedder.
+- Semantic cache требует pgvector и embedder; mock-embedder разрешён только для
+  demo/тестов, в production используется Ollama/OpenAI-compatible embedder.
+  Кэш учитывает параметры генерации и фиксированную размерность 768.
 - Redis Cluster не является целью: Lua-скрипты рассчитаны на один Redis
   (ключи используют hash tag на будущее, но динамические ключи в cluster
   требуют отдельной схемы).
 - Streaming-ответы не проходят PII-redaction (чтобы не ломать first-byte latency);
-  запросы редактируются всегда при включённом флаге.
+  запросы редактируются всегда при включённом флаге, PII-режим входит в ключ кэша.
 - Usage/audit асинхронные: возможен небольшой лаг; при переполнении очередей
   записи дропаются и это видно в метриках.
 - Budgets мягкие на settlement: резерв считается по `prompt + max_tokens`,
   затем корректируется фактическим usage.
 - Счётчики лимитов и бюджетов живут в Redis; потеря Redis сбрасывает их
   (конфигурация и usage в PostgreSQL при этом сохраняются).
+- При нескольких репликах отзыв ключа доезжает через периодический reload
+  (`GOGATE_CONTROL_RELOAD_INTERVAL`) или Redis pub/sub; окно — до интервала.
+- `GOGATE_REQUEST_TIMEOUT` ограничивает и длинные стримы; для очень долгих
+  генераций увеличьте его.
 - Multi-region, Kubernetes и биллинг — non-goals.
 
 ## Безопасность
@@ -333,7 +344,9 @@ docs/                       # RU/EN документация и ADR
 - Body limit, лимиты сообщений/токенов, таймауты, CORS выключен по умолчанию.
 - SSRF-защита: URL провайдеров задаёт только админ; проверяются scheme, userinfo,
   metadata/link-local, private-адреса (private разрешены только флагом для
-  локального Ollama).
+  локального Ollama; по умолчанию флаг выключен).
+- `api_key_env` ограничен префиксом `GOGATE_UPSTREAM_`, чтобы admin не мог
+  прочитать произвольный секрет процесса и отправить его на upstream.
 - pprof — только на admin и только по флагу.
 - Секреты — только env; `.env` генерируется локально и исключён из git.
 

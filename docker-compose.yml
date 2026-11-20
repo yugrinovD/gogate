@@ -2,7 +2,7 @@ name: gogate
 
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg17@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-gogate}
@@ -19,7 +19,7 @@ services:
       retries: 20
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
     restart: unless-stopped
     command: ["redis-server", "--requirepass", "${GOGATE_REDIS_PASSWORD:?run make init-env}", "--appendonly", "yes"]
     ports:
@@ -59,7 +59,7 @@ services:
       - no-new-privileges:true
 
   prometheus:
-    image: prom/prometheus:v2.55.1
+    image: prom/prometheus:v2.55.1@sha256:2659f4c2ebb718e7695cb9b25ffa7d6be64db013daba13e05c875451cf51b0d3
     restart: unless-stopped
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -74,7 +74,7 @@ services:
       - gogate
 
   grafana:
-    image: grafana/grafana:11.6.0
+    image: grafana/grafana:11.6.0@sha256:62d2b9d20a19714ebfe48d1bb405086081bc602aa053e28cf6d73c7537640dfb
     restart: unless-stopped
     environment:
       GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
@@ -91,7 +91,7 @@ services:
       - prometheus
 
   jaeger:
-    image: jaegertracing/all-in-one:1.57.0
+    image: jaegertracing/all-in-one:1.57.0@sha256:8f165334f418ca53691ce358c19b4244226ed35c5d18408c5acf305af2065fb9
     restart: unless-stopped
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
@@ -131,7 +131,7 @@ services:
         condition: service_started
 
   k6:
-    image: grafana/k6:0.56.0
+    image: grafana/k6:0.56.0@sha256:89684628f98358ba6cc1a2e604bf2b05d49aad43611ece73a44aafcec06fcf28
     profiles: ["load"]
     environment:
       BASE_URL: http://gogate:8080

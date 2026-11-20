@@ -25,5 +25,5 @@ control plane.
 ## Последствия
 
 - Admin-порт нельзя публиковать в интернет; используйте VPN/bastion.
-- Локальный Ollama требует `GOGATE_ALLOW_PRIVATE_UPSTREAMS=true`.
+- Локальный Ollama требует `GOGATE_ALLOW_PRIVATE_UPSTREAMS=true`; по умолчанию флаг выключен.
 - DNS rebinding остаётся остаточным риском; нужен egress firewall.

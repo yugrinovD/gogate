@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -82,6 +85,23 @@ type Config struct {
 type ModelInfo struct {
 	ID      string
 	OwnedBy string
+}
+
+// ParseRetryAfter parses an HTTP Retry-After value (seconds or HTTP date).
+func ParseRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if t, err := http.ParseTime(value); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 // UpstreamError is a normalized upstream failure.

@@ -211,7 +211,8 @@ paths:
   /admin/v1/providers/{id}:
     patch:
       tags: [providers]
-      summary: Replace provider configuration
+      summary: Partially update provider configuration
+      description: Only supplied fields are changed. The provider name is immutable.
       operationId: updateProvider
       parameters:
         - $ref: '#/components/parameters/ID'
@@ -220,7 +221,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ProviderInput'
+              $ref: '#/components/schemas/ProviderPatch'
       responses:
         '200':
           description: Updated provider.
@@ -491,7 +492,9 @@ components:
           type: string
           enum: [mock, ollama, openai_compatible]
         base_url: {type: string}
-        api_key_env: {type: string}
+        api_key_env:
+          type: string
+          description: Environment variable name; must start with GOGATE_UPSTREAM_.
         models:
           type: array
           items: {type: string}
@@ -511,14 +514,37 @@ components:
           type: string
           enum: [mock, ollama, openai_compatible]
         base_url: {type: string}
-        api_key_env: {type: string}
+        api_key_env:
+          type: string
+          description: Environment variable name; must start with GOGATE_UPSTREAM_.
         models:
           type: array
           items: {type: string}
         priority: {type: integer}
         enabled: {type: boolean}
-        timeout_ms: {type: integer}
-        max_retries: {type: integer}
+        timeout_ms: {type: integer, minimum: 1, maximum: 300000}
+        max_retries: {type: integer, minimum: 0, maximum: 5}
+        config: {type: object, additionalProperties: true}
+    ProviderPatch:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Must match the existing name; renaming is not supported.
+        kind:
+          type: string
+          enum: [mock, ollama, openai_compatible]
+        base_url: {type: string}
+        api_key_env:
+          type: string
+          description: Environment variable name; must start with GOGATE_UPSTREAM_.
+        models:
+          type: array
+          items: {type: string}
+        priority: {type: integer}
+        enabled: {type: boolean}
+        timeout_ms: {type: integer, minimum: 1, maximum: 300000}
+        max_retries: {type: integer, minimum: 0, maximum: 5}
         config: {type: object, additionalProperties: true}
     Quota:
       type: object
@@ -537,27 +563,27 @@ components:
       properties:
         tenant_id: {type: string, format: uuid}
         api_key_id: {type: [string, 'null'], format: uuid}
-        rpm: {type: [integer, 'null']}
-        tpm: {type: [integer, 'null']}
-        daily_requests: {type: [integer, 'null']}
-        daily_tokens: {type: [integer, 'null']}
-        monthly_cost_usd: {type: [number, 'null']}
+        rpm: {type: [integer, 'null'], minimum: 0}
+        tpm: {type: [integer, 'null'], minimum: 0}
+        daily_requests: {type: [integer, 'null'], minimum: 0}
+        daily_tokens: {type: [integer, 'null'], minimum: 0}
+        monthly_cost_usd: {type: [number, 'null'], minimum: 0}
     ModelPrice:
       type: object
       properties:
         id: {type: string, format: uuid}
         provider: {type: string}
         model: {type: string}
-        input_usd_per_1m: {type: number}
-        output_usd_per_1m: {type: number}
+        input_usd_per_1m: {type: number, minimum: 0}
+        output_usd_per_1m: {type: number, minimum: 0}
     ModelPriceInput:
       type: object
       required: [provider, model]
       properties:
         provider: {type: string}
         model: {type: string}
-        input_usd_per_1m: {type: number}
-        output_usd_per_1m: {type: number}
+        input_usd_per_1m: {type: number, minimum: 0}
+        output_usd_per_1m: {type: number, minimum: 0}
     UsageSummary:
       type: object
       properties:

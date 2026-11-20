@@ -81,6 +81,8 @@ Residual risk: explicitly enabled fail-open; budgets use soft settlement.
 - pprof is flag-gated and admin-only.
 - Config is returned without secrets.
 - Provider secrets are env-only; the database stores the variable name.
+- `api_key_env` is restricted to the `GOGATE_UPSTREAM_` prefix so an admin cannot
+  read arbitrary process secrets (`GOGATE_API_KEY_PEPPER`, `AWS_*`).
 
 Recommendation: never expose the admin port to the internet; use VPN/bastion.
 

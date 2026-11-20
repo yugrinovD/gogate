@@ -25,5 +25,5 @@ compromise.
 ## Consequences
 
 - Never expose the admin port to the internet; use VPN/bastion.
-- Local Ollama requires `GOGATE_ALLOW_PRIVATE_UPSTREAMS=true`.
+- Local Ollama requires `GOGATE_ALLOW_PRIVATE_UPSTREAMS=true`; the flag defaults to false.
 - DNS rebinding remains a residual risk; use an egress firewall.

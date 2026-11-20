@@ -63,11 +63,11 @@ func NewRegistry(configs []provider.Config, opts Options) *Registry {
 		case "mock":
 			p, err = mock.New(c)
 		case "ollama":
-			if err = security.ValidateUpstreamURL(c.BaseURL, opts.AllowPrivate); err == nil {
+			if err = security.ValidateUpstreamURLSyntax(c.BaseURL); err == nil {
 				p, err = ollama.New(c, opts.HTTPClient)
 			}
 		case "openai_compatible":
-			if err = security.ValidateUpstreamURL(c.BaseURL, opts.AllowPrivate); err == nil {
+			if err = security.ValidateUpstreamURLSyntax(c.BaseURL); err == nil {
 				p, err = openaicompat.New(c, opts.HTTPClient, opts.Logger)
 			}
 		default:

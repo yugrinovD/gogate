@@ -25,10 +25,12 @@ type Config struct {
 
 	Pepper string
 
-	MaxBodyBytes      int64
-	MaxOutputTokens   int
-	MaxMessages       int
-	MaxInflight       int
+	MaxBodyBytes    int64
+	MaxOutputTokens int
+	MaxMessages     int
+	MaxInflight     int
+	MaxAPIKeyBytes  int
+
 	RequestTimeout    time.Duration
 	FirstByteTimeout  time.Duration
 	StreamIdleTimeout time.Duration
@@ -49,6 +51,9 @@ type Config struct {
 	BudgetEnabled       bool
 	AuditRetention      time.Duration
 
+	ControlReloadInterval time.Duration
+	UpstreamKeyEnvPrefix  string
+
 	BootstrapProviders bool
 	OllamaBaseURL      string
 	OllamaModels       []string
@@ -56,10 +61,10 @@ type Config struct {
 	OpenAIKeyEnv       string
 	OpenAIModels       []string
 	MockModels         []string
-	DefaultOllamaModel string
 
 	MetricsEnabled bool
 	TracingEnabled bool
+	TraceSample    float64
 	OTLPEndpoint   string
 	LogLevel       string
 	AccessLogRate  float64
@@ -75,70 +80,80 @@ type Config struct {
 }
 
 // Load reads configuration from the environment, applies defaults and validates
-// required values.
+// required values. Malformed typed values are reported instead of silently
+// falling back to defaults.
 func Load() (Config, error) {
+	l := &loader{}
 	cfg := Config{
-		Env:         envString("GOGATE_ENV", "dev"),
-		PublicAddr:  envString("GOGATE_PUBLIC_ADDR", ":8080"),
-		AdminAddr:   envString("GOGATE_ADMIN_ADDR", ":9090"),
-		AdminToken:  envString("GOGATE_ADMIN_TOKEN", ""),
-		DatabaseURL: envString("GOGATE_DATABASE_URL", "postgres://gogate:gogate@127.0.0.1:5432/gogate?sslmode=disable"),
+		Env:         l.String("GOGATE_ENV", "dev"),
+		PublicAddr:  l.String("GOGATE_PUBLIC_ADDR", ":8080"),
+		AdminAddr:   l.String("GOGATE_ADMIN_ADDR", ":9090"),
+		AdminToken:  l.String("GOGATE_ADMIN_TOKEN", ""),
+		DatabaseURL: l.String("GOGATE_DATABASE_URL", "postgres://gogate:gogate@127.0.0.1:5432/gogate?sslmode=disable"),
 
-		RedisAddr:     envString("GOGATE_REDIS_ADDR", "127.0.0.1:6379"),
-		RedisPassword: envString("GOGATE_REDIS_PASSWORD", ""),
-		RedisDB:       envInt("GOGATE_REDIS_DB", 0),
+		RedisAddr:     l.String("GOGATE_REDIS_ADDR", "127.0.0.1:6379"),
+		RedisPassword: l.String("GOGATE_REDIS_PASSWORD", ""),
+		RedisDB:       l.Int("GOGATE_REDIS_DB", 0),
 
-		Pepper: envString("GOGATE_API_KEY_PEPPER", ""),
+		Pepper: l.String("GOGATE_API_KEY_PEPPER", ""),
 
-		MaxBodyBytes:      envInt64("GOGATE_MAX_BODY_BYTES", 1<<20),
-		MaxOutputTokens:   envInt("GOGATE_MAX_OUTPUT_TOKENS", 4096),
-		MaxMessages:       envInt("GOGATE_MAX_MESSAGES", 128),
-		MaxInflight:       envInt("GOGATE_MAX_INFLIGHT", 4096),
-		RequestTimeout:    envDuration("GOGATE_REQUEST_TIMEOUT", 120*time.Second),
-		FirstByteTimeout:  envDuration("GOGATE_FIRST_BYTE_TIMEOUT", 30*time.Second),
-		StreamIdleTimeout: envDuration("GOGATE_STREAM_IDLE_TIMEOUT", 60*time.Second),
+		MaxBodyBytes:    l.Int64("GOGATE_MAX_BODY_BYTES", 1<<20),
+		MaxOutputTokens: l.Int("GOGATE_MAX_OUTPUT_TOKENS", 4096),
+		MaxMessages:     l.Int("GOGATE_MAX_MESSAGES", 128),
+		MaxInflight:     l.Int("GOGATE_MAX_INFLIGHT", 4096),
+		MaxAPIKeyBytes:  l.Int("GOGATE_MAX_API_KEY_BYTES", 256),
 
-		CacheEnabled: envBool("GOGATE_CACHE_ENABLED", true),
-		CacheTTL:     envDuration("GOGATE_CACHE_TTL", 5*time.Minute),
+		RequestTimeout:    l.Duration("GOGATE_REQUEST_TIMEOUT", 120*time.Second),
+		FirstByteTimeout:  l.Duration("GOGATE_FIRST_BYTE_TIMEOUT", 30*time.Second),
+		StreamIdleTimeout: l.Duration("GOGATE_STREAM_IDLE_TIMEOUT", 60*time.Second),
 
-		SemanticCacheEnabled: envBool("GOGATE_SEMANTIC_CACHE_ENABLED", false),
-		EmbeddingProvider:    envString("GOGATE_EMBEDDING_PROVIDER", "mock"),
-		EmbeddingModel:       envString("GOGATE_EMBEDDING_MODEL", "mock-embed"),
-		SemanticThreshold:    envFloat("GOGATE_SEMANTIC_THRESHOLD", 0.95),
+		CacheEnabled: l.Bool("GOGATE_CACHE_ENABLED", true),
+		CacheTTL:     l.Duration("GOGATE_CACHE_TTL", 5*time.Minute),
 
-		RateLimitEnabled:  envBool("GOGATE_RATE_LIMIT_ENABLED", true),
-		RateLimitFailOpen: envBool("GOGATE_RATE_LIMIT_FAIL_OPEN", false),
+		SemanticCacheEnabled: l.Bool("GOGATE_SEMANTIC_CACHE_ENABLED", false),
+		EmbeddingProvider:    l.String("GOGATE_EMBEDDING_PROVIDER", "mock"),
+		EmbeddingModel:       l.String("GOGATE_EMBEDDING_MODEL", "mock-embed"),
+		SemanticThreshold:    l.Float("GOGATE_SEMANTIC_THRESHOLD", 0.95),
 
-		PIIRedactionEnabled: envBool("GOGATE_PII_REDACT", false),
-		AuditEnabled:        envBool("GOGATE_AUDIT_ENABLED", true),
-		BudgetEnabled:       envBool("GOGATE_BUDGET_ENABLED", true),
-		AuditRetention:      envDuration("GOGATE_AUDIT_RETENTION", 30*24*time.Hour),
+		RateLimitEnabled:  l.Bool("GOGATE_RATE_LIMIT_ENABLED", true),
+		RateLimitFailOpen: l.Bool("GOGATE_RATE_LIMIT_FAIL_OPEN", false),
 
-		BootstrapProviders: envBool("GOGATE_BOOTSTRAP_PROVIDERS", true),
-		OllamaBaseURL:      envString("GOGATE_OLLAMA_BASE_URL", ""),
-		OllamaModels:       envList("GOGATE_OLLAMA_MODELS", []string{"qwen2.5:3b"}),
-		OpenAIBaseURL:      envString("GOGATE_OPENAI_BASE_URL", ""),
-		OpenAIKeyEnv:       envString("GOGATE_OPENAI_KEY_ENV", "GOGATE_OPENAI_API_KEY"),
-		OpenAIModels:       envList("GOGATE_OPENAI_MODELS", nil),
-		MockModels:         envList("GOGATE_MOCK_MODELS", []string{"mock", "mock-fast"}),
-		DefaultOllamaModel: envString("GOGATE_DEFAULT_OLLAMA_MODEL", "qwen2.5:3b"),
+		PIIRedactionEnabled: l.Bool("GOGATE_PII_REDACT", false),
+		AuditEnabled:        l.Bool("GOGATE_AUDIT_ENABLED", true),
+		BudgetEnabled:       l.Bool("GOGATE_BUDGET_ENABLED", true),
+		AuditRetention:      l.Duration("GOGATE_AUDIT_RETENTION", 30*24*time.Hour),
 
-		MetricsEnabled: envBool("GOGATE_METRICS_ENABLED", true),
-		TracingEnabled: envBool("GOGATE_TRACING_ENABLED", false),
-		OTLPEndpoint:   envString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
-		LogLevel:       envString("GOGATE_LOG_LEVEL", "info"),
-		AccessLogRate:  envFloat("GOGATE_ACCESS_LOG_SAMPLE", 1.0),
-		PprofEnabled:   envBool("GOGATE_PPROF_ENABLED", false),
+		ControlReloadInterval: l.Duration("GOGATE_CONTROL_RELOAD_INTERVAL", 30*time.Second),
+		UpstreamKeyEnvPrefix:  l.String("GOGATE_UPSTREAM_KEY_PREFIX", "GOGATE_UPSTREAM_"),
 
-		CORSOrigins:          envList("GOGATE_CORS_ALLOWED_ORIGINS", nil),
-		AllowPrivateUpstream: envBool("GOGATE_ALLOW_PRIVATE_UPSTREAMS", true),
+		BootstrapProviders: l.Bool("GOGATE_BOOTSTRAP_PROVIDERS", true),
+		OllamaBaseURL:      l.String("GOGATE_OLLAMA_BASE_URL", ""),
+		OllamaModels:       l.List("GOGATE_OLLAMA_MODELS", []string{"qwen2.5:3b"}),
+		OpenAIBaseURL:      l.String("GOGATE_OPENAI_BASE_URL", ""),
+		OpenAIKeyEnv:       l.String("GOGATE_OPENAI_KEY_ENV", "GOGATE_UPSTREAM_OPENAI_API_KEY"),
+		OpenAIModels:       l.List("GOGATE_OPENAI_MODELS", nil),
+		MockModels:         l.List("GOGATE_MOCK_MODELS", []string{"mock", "mock-fast"}),
 
-		ReadHeaderTimeout: envDuration("GOGATE_READ_HEADER_TIMEOUT", 5*time.Second),
-		IdleTimeout:       envDuration("GOGATE_IDLE_TIMEOUT", 120*time.Second),
-		DatabaseMaxConns:  clampInt32(envInt("GOGATE_DATABASE_MAX_CONNS", 20), 1, 1000),
-		RedisPoolSize:     envInt("GOGATE_REDIS_POOL_SIZE", 64),
+		MetricsEnabled: l.Bool("GOGATE_METRICS_ENABLED", true),
+		TracingEnabled: l.Bool("GOGATE_TRACING_ENABLED", false),
+		TraceSample:    l.Float("GOGATE_TRACE_SAMPLE_RATIO", 1.0),
+		OTLPEndpoint:   l.String("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		LogLevel:       l.String("GOGATE_LOG_LEVEL", "info"),
+		AccessLogRate:  l.Float("GOGATE_ACCESS_LOG_SAMPLE", 1.0),
+		PprofEnabled:   l.Bool("GOGATE_PPROF_ENABLED", false),
+
+		CORSOrigins:          l.List("GOGATE_CORS_ALLOWED_ORIGINS", nil),
+		AllowPrivateUpstream: l.Bool("GOGATE_ALLOW_PRIVATE_UPSTREAMS", false),
+
+		ReadHeaderTimeout: l.Duration("GOGATE_READ_HEADER_TIMEOUT", 5*time.Second),
+		IdleTimeout:       l.Duration("GOGATE_IDLE_TIMEOUT", 120*time.Second),
+		DatabaseMaxConns:  clampInt32(l.Int("GOGATE_DATABASE_MAX_CONNS", 20), 1, 1000),
+		RedisPoolSize:     l.Int("GOGATE_REDIS_POOL_SIZE", 64),
 	}
 
+	if err := errors.Join(l.errs...); err != nil {
+		return Config{}, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -166,11 +181,47 @@ func (c Config) Validate() error {
 	if c.MaxOutputTokens <= 0 {
 		errs = append(errs, errors.New("GOGATE_MAX_OUTPUT_TOKENS must be positive"))
 	}
+	if c.MaxMessages <= 0 {
+		errs = append(errs, errors.New("GOGATE_MAX_MESSAGES must be positive"))
+	}
+	if c.MaxInflight <= 0 {
+		errs = append(errs, errors.New("GOGATE_MAX_INFLIGHT must be positive"))
+	}
+	if c.MaxAPIKeyBytes < 64 {
+		errs = append(errs, errors.New("GOGATE_MAX_API_KEY_BYTES must be at least 64"))
+	}
+	if c.RequestTimeout <= 0 || c.FirstByteTimeout <= 0 || c.StreamIdleTimeout <= 0 {
+		errs = append(errs, errors.New("request, first-byte and stream-idle timeouts must be positive"))
+	}
+	if c.CacheTTL <= 0 {
+		errs = append(errs, errors.New("GOGATE_CACHE_TTL must be positive"))
+	}
+	if c.ControlReloadInterval <= 0 {
+		errs = append(errs, errors.New("GOGATE_CONTROL_RELOAD_INTERVAL must be positive"))
+	}
+	if strings.TrimSpace(c.UpstreamKeyEnvPrefix) == "" || !strings.HasSuffix(c.UpstreamKeyEnvPrefix, "_") {
+		errs = append(errs, errors.New("GOGATE_UPSTREAM_KEY_PREFIX must be non-empty and end with '_'"))
+	}
 	if c.SemanticThreshold <= 0 || c.SemanticThreshold > 1 {
 		errs = append(errs, errors.New("GOGATE_SEMANTIC_THRESHOLD must be in (0,1]"))
 	}
+	if c.TraceSample < 0 || c.TraceSample > 1 {
+		errs = append(errs, errors.New("GOGATE_TRACE_SAMPLE_RATIO must be in [0,1]"))
+	}
 	if c.AccessLogRate < 0 || c.AccessLogRate > 1 {
 		errs = append(errs, errors.New("GOGATE_ACCESS_LOG_SAMPLE must be in [0,1]"))
+	}
+	if c.RedisPoolSize <= 0 {
+		errs = append(errs, errors.New("GOGATE_REDIS_POOL_SIZE must be positive"))
+	}
+	if c.ReadHeaderTimeout <= 0 || c.IdleTimeout <= 0 {
+		errs = append(errs, errors.New("HTTP header and idle timeouts must be positive"))
+	}
+	if c.AuditRetention <= 0 {
+		errs = append(errs, errors.New("GOGATE_AUDIT_RETENTION must be positive"))
+	}
+	if c.SecureEnv() && c.SemanticCacheEnabled && strings.EqualFold(c.EmbeddingProvider, "mock") {
+		errs = append(errs, errors.New("semantic cache with the mock embedder is not allowed in production"))
 	}
 	return errors.Join(errs...)
 }
@@ -178,88 +229,111 @@ func (c Config) Validate() error {
 // AdminEnabled reports whether the separate admin listener should run.
 func (c Config) AdminEnabled() bool { return strings.TrimSpace(c.AdminToken) != "" }
 
+// SecureEnv reports whether production security checks should be strict.
+func (c Config) SecureEnv() bool {
+	return strings.EqualFold(c.Env, "prod") || strings.EqualFold(c.Env, "production")
+}
+
 // Redacted returns a safe representation for admin diagnostics.
 func (c Config) Redacted() map[string]any {
 	return map[string]any{
-		"env":                    c.Env,
-		"public_addr":            c.PublicAddr,
-		"admin_addr":             c.AdminAddr,
-		"admin_enabled":          c.AdminEnabled(),
-		"redis_addr":             c.RedisAddr,
-		"max_body_bytes":         c.MaxBodyBytes,
-		"max_output_tokens":      c.MaxOutputTokens,
-		"request_timeout":        c.RequestTimeout.String(),
-		"first_byte_timeout":     c.FirstByteTimeout.String(),
-		"stream_idle_timeout":    c.StreamIdleTimeout.String(),
-		"cache_enabled":          c.CacheEnabled,
-		"semantic_cache_enabled": c.SemanticCacheEnabled,
-		"rate_limit_enabled":     c.RateLimitEnabled,
-		"pii_redact":             c.PIIRedactionEnabled,
-		"audit_enabled":          c.AuditEnabled,
-		"budget_enabled":         c.BudgetEnabled,
-		"metrics_enabled":        c.MetricsEnabled,
-		"tracing_enabled":        c.TracingEnabled,
-		"log_level":              c.LogLevel,
-		"bootstrap_providers":    c.BootstrapProviders,
+		"env":                     c.Env,
+		"public_addr":             c.PublicAddr,
+		"admin_addr":              c.AdminAddr,
+		"admin_enabled":           c.AdminEnabled(),
+		"redis_addr":              c.RedisAddr,
+		"max_body_bytes":          c.MaxBodyBytes,
+		"max_output_tokens":       c.MaxOutputTokens,
+		"max_api_key_bytes":       c.MaxAPIKeyBytes,
+		"request_timeout":         c.RequestTimeout.String(),
+		"first_byte_timeout":      c.FirstByteTimeout.String(),
+		"stream_idle_timeout":     c.StreamIdleTimeout.String(),
+		"cache_enabled":           c.CacheEnabled,
+		"semantic_cache_enabled":  c.SemanticCacheEnabled,
+		"rate_limit_enabled":      c.RateLimitEnabled,
+		"rate_limit_fail_open":    c.RateLimitFailOpen,
+		"pii_redact":              c.PIIRedactionEnabled,
+		"audit_enabled":           c.AuditEnabled,
+		"budget_enabled":          c.BudgetEnabled,
+		"control_reload_interval": c.ControlReloadInterval.String(),
+		"metrics_enabled":         c.MetricsEnabled,
+		"tracing_enabled":         c.TracingEnabled,
+		"trace_sample_ratio":      c.TraceSample,
+		"log_level":               c.LogLevel,
+		"bootstrap_providers":     c.BootstrapProviders,
+		"allow_private_upstream":  c.AllowPrivateUpstream,
 	}
 }
 
-func envString(key, def string) string {
+// String implements fmt.Stringer without exposing secrets.
+func (c Config) String() string {
+	return fmt.Sprintf("gogate env=%s public=%s admin=%s", c.Env, c.PublicAddr, c.AdminAddr)
+}
+
+type loader struct {
+	errs []error
+}
+
+func (l *loader) String(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok {
 		return v
 	}
 	return def
 }
 
-func envBool(key string, def bool) bool {
+func (l *loader) Bool(key string, def bool) bool {
 	v, ok := os.LookupEnv(key)
 	if !ok || strings.TrimSpace(v) == "" {
 		return def
 	}
 	b, err := strconv.ParseBool(v)
 	if err != nil {
+		l.errs = append(l.errs, fmt.Errorf("%s: invalid bool %q", key, v))
 		return def
 	}
 	return b
 }
 
-func envInt(key string, def int) int {
+func (l *loader) Int(key string, def int) int {
 	v, ok := os.LookupEnv(key)
 	if !ok || strings.TrimSpace(v) == "" {
 		return def
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
+		l.errs = append(l.errs, fmt.Errorf("%s: invalid integer %q", key, v))
 		return def
 	}
 	return n
 }
 
-func envInt64(key string, def int64) int64 {
+func (l *loader) Int64(key string, def int64) int64 {
 	v, ok := os.LookupEnv(key)
 	if !ok || strings.TrimSpace(v) == "" {
 		return def
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
+		l.errs = append(l.errs, fmt.Errorf("%s: invalid integer %q", key, v))
 		return def
 	}
 	return n
 }
 
-func envFloat(key string, def float64) float64 {
+func (l *loader) Float(key string, def float64) float64 {
 	v, ok := os.LookupEnv(key)
 	if !ok || strings.TrimSpace(v) == "" {
 		return def
 	}
 	f, err := strconv.ParseFloat(v, 64)
 	if err != nil {
+		l.errs = append(l.errs, fmt.Errorf("%s: invalid float %q", key, v))
 		return def
 	}
 	return f
 }
 
-func envDuration(key string, def time.Duration) time.Duration {
+func (l *loader) Duration(key string, def time.Duration) time.Duration {
 	v, ok := os.LookupEnv(key)
 	if !ok || strings.TrimSpace(v) == "" {
 		return def
@@ -269,12 +343,13 @@ func envDuration(key string, def time.Duration) time.Duration {
 		if n, nerr := strconv.Atoi(v); nerr == nil {
 			return time.Duration(n) * time.Second
 		}
+		l.errs = append(l.errs, fmt.Errorf("%s: invalid duration %q", key, v))
 		return def
 	}
 	return d
 }
 
-func envList(key string, def []string) []string {
+func (l *loader) List(key string, def []string) []string {
 	v, ok := os.LookupEnv(key)
 	if !ok {
 		return def
@@ -290,11 +365,6 @@ func envList(key string, def []string) []string {
 		return def
 	}
 	return out
-}
-
-// String implements fmt.Stringer without exposing secrets.
-func (c Config) String() string {
-	return fmt.Sprintf("gogate env=%s public=%s admin=%s", c.Env, c.PublicAddr, c.AdminAddr)
 }
 
 func clampInt32(v, min, max int) int32 {

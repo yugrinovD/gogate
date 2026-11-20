@@ -93,6 +93,11 @@ func AccessLog(log *slog.Logger, sample float64) func(http.Handler) http.Handler
 			next.ServeHTTP(rec, r)
 			latency := time.Since(start)
 			status := rec.Status()
+			// Chat handler emits a richer completion line with provider, cache,
+			// token and cost fields. Keep AccessLog only for 5xx on that path.
+			if r.URL.Path == "/v1/chat/completions" && status >= 200 && status < 400 {
+				return
+			}
 			if status >= 500 || sample >= 1 || mathrand.Float64() < sample {
 				attrs := []any{
 					"method", r.Method,

@@ -11,10 +11,11 @@ import (
 
 // Options configures Redis connectivity.
 type Options struct {
-	Addr     string
-	Password string
-	DB       int
-	PoolSize int
+	Addr        string
+	Password    string
+	DB          int
+	PoolSize    int
+	RequirePing bool
 }
 
 // New opens and verifies a Redis client.
@@ -36,8 +37,11 @@ func New(ctx context.Context, o Options) (*redis.Client, error) {
 	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	if err := c.Ping(pingCtx).Err(); err != nil {
-		_ = c.Close()
-		return nil, fmt.Errorf("ping redis: %w", err)
+		if o.RequirePing {
+			_ = c.Close()
+			return nil, fmt.Errorf("ping redis: %w", err)
+		}
+		return c, fmt.Errorf("ping redis: %w", err)
 	}
 	return c, nil
 }

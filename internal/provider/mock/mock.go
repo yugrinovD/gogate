@@ -29,6 +29,7 @@ type config struct {
 	FailBeforeFirst bool    `json:"fail_before_first"`
 	FailAfterChunks int     `json:"fail_after_chunks"`
 	FailRate        float64 `json:"fail_rate"`
+	FailStatus      int     `json:"fail_status"`
 	ErrorMessage    string  `json:"error_message"`
 }
 
@@ -54,7 +55,7 @@ func (p *Provider) Ping(context.Context) error { return nil }
 
 func (p *Provider) Chat(ctx context.Context, req provider.Request) (provider.Stream, error) {
 	if p.cfg.FailBeforeFirst || (p.cfg.FailRate > 0 && mathrand.Float64() < p.cfg.FailRate) {
-		return nil, &provider.UpstreamError{Provider: p.name, Message: p.cfg.ErrorMessage}
+		return nil, &provider.UpstreamError{Provider: p.name, StatusCode: p.cfg.FailStatus, Message: p.cfg.ErrorMessage}
 	}
 	content := buildResponse(req)
 	chunks := splitWords(content)
@@ -114,7 +115,7 @@ func (s *stream) Next(ctx context.Context) (provider.Chunk, error) {
 	if s.provider.cfg.FailAfterChunks > 0 && s.index >= s.provider.cfg.FailAfterChunks && !s.failed {
 		s.failed = true
 		s.closed = true
-		return provider.Chunk{}, &provider.UpstreamError{Provider: s.provider.name, Message: s.provider.cfg.ErrorMessage}
+		return provider.Chunk{}, &provider.UpstreamError{Provider: s.provider.name, StatusCode: s.provider.cfg.FailStatus, Message: s.provider.cfg.ErrorMessage}
 	}
 	if s.delay > 0 {
 		if err := sleep(ctx, s.delay); err != nil {

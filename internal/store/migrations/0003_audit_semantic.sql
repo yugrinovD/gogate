@@ -29,6 +29,7 @@ BEGIN
                 tenant_id   uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
                 model       text NOT NULL,
                 prompt_hash bytea NOT NULL,
+                params_hash bytea NOT NULL DEFAULT '\x',
                 provider    text NOT NULL DEFAULT '',
                 embedding   vector(768) NOT NULL,
                 response    jsonb NOT NULL,
@@ -40,7 +41,7 @@ BEGIN
         $ddl$;
         EXECUTE $ddl$
             CREATE INDEX IF NOT EXISTS semantic_cache_scope_idx
-                ON semantic_cache(tenant_id, model, expires_at)
+                ON semantic_cache(tenant_id, model, params_hash, expires_at)
         $ddl$;
         EXECUTE $ddl$
             CREATE INDEX IF NOT EXISTS semantic_cache_embedding_idx

@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -47,6 +46,10 @@ func GenerateKey(env, pepper string) (KeyMaterial, error) {
 
 // ParseKey splits a presented key into its public prefix and secret.
 func ParseKey(key string) (prefix, secret string, err error) {
+	return parseKeyUnchecked(key)
+}
+
+func parseKeyUnchecked(key string) (prefix, secret string, err error) {
 	key = strings.TrimSpace(key)
 	if !strings.HasPrefix(key, prefixMarker) {
 		return "", "", errors.New("invalid key prefix")
@@ -74,26 +77,6 @@ func Verify(stored, computed []byte) bool {
 	return len(stored) == len(computed) && subtle.ConstantTimeCompare(stored, computed) == 1
 }
 
-// RandomToken returns a URL-safe random token.
-func RandomToken(bytes int) (string, error) {
-	if bytes <= 0 {
-		bytes = 32
-	}
-	b := make([]byte, bytes)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-// SafePrefix returns a short, non-secret representation of a key prefix.
-func SafePrefix(prefix string) string {
-	if len(prefix) <= 20 {
-		return prefix
-	}
-	return fmt.Sprintf("%s…%s", prefix[:12], prefix[len(prefix)-4:])
-}
-
 func sanitizeSegment(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	var b strings.Builder
@@ -103,4 +86,41 @@ func sanitizeSegment(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// DefaultMaxKeyBytes is a hard upper bound for presented API keys.
+const DefaultMaxKeyBytes = 512
+
+// ParseKeyLimited parses a key while rejecting pathological header sizes.
+func ParseKeyLimited(key string, maxBytes int) (prefix, secret string, err error) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxKeyBytes
+	}
+	if len(key) > maxBytes {
+		return "", "", errors.New("key is too long")
+	}
+	return ParseKey(key)
+}
+
+// ValidateEnvName restricts provider secret references to an allowlisted env
+// prefix, preventing an admin from exfiltrating unrelated process secrets.
+func ValidateEnvName(name, prefix string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return errors.New("upstream key env prefix is empty")
+	}
+	if !strings.HasPrefix(name, prefix) {
+		return fmt.Errorf("api_key_env must start with %q", prefix)
+	}
+	for _, r := range name {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return fmt.Errorf("api_key_env contains invalid character %q", r)
+	}
+	return nil
 }

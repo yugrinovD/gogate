@@ -44,8 +44,10 @@ go run ./cmd/gogate
 | Listeners | `GOGATE_PUBLIC_ADDR`, `GOGATE_ADMIN_ADDR`, `GOGATE_ADMIN_TOKEN` |
 | Secrets | `GOGATE_API_KEY_PEPPER`, upstream keys через `*_API_KEY` |
 | Storage | `GOGATE_DATABASE_URL`, `GOGATE_REDIS_*` |
-| Limits | `GOGATE_MAX_BODY_BYTES`, `GOGATE_MAX_OUTPUT_TOKENS`, `GOGATE_MAX_MESSAGES` |
+| Upstream env | `GOGATE_UPSTREAM_KEY_PREFIX`, `GOGATE_OPENAI_KEY_ENV` |
+| Limits | `GOGATE_MAX_BODY_BYTES`, `GOGATE_MAX_OUTPUT_TOKENS`, `GOGATE_MAX_MESSAGES`, `GOGATE_MAX_INFLIGHT`, `GOGATE_MAX_API_KEY_BYTES` |
 | Timeouts | `GOGATE_REQUEST_TIMEOUT`, `GOGATE_FIRST_BYTE_TIMEOUT`, `GOGATE_STREAM_IDLE_TIMEOUT` |
+| Replicas | `GOGATE_CONTROL_RELOAD_INTERVAL` |
 | Cache | `GOGATE_CACHE_*`, `GOGATE_SEMANTIC_CACHE_*`, `GOGATE_EMBEDDING_*` |
 | Limits/P2 | `GOGATE_RATE_LIMIT_*`, `GOGATE_PII_REDACT`, `GOGATE_BUDGET_ENABLED`, `GOGATE_AUDIT_*` |
 | Observability | `GOGATE_METRICS_ENABLED`, `GOGATE_TRACING_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `GOGATE_LOG_LEVEL`, `GOGATE_ACCESS_LOG_SAMPLE` |
@@ -74,9 +76,12 @@ curl -s -X POST localhost:9090/admin/v1/cache/purge -H "$AUTH" \
   -H 'Content-Type: application/json' -d '{"exact":true}' | jq
 ```
 
-Мутации автоматически перестраивают in-memory snapshot. `POST /reload` нужен,
-если провайдер появился/исчез по DNS (например, контейнер Ollama был запущен
-после gogate) или если control plane меняли напрямую в БД.
+Мутации автоматически перестраивают in-memory snapshot и публикуют уведомление
+в Redis. Каждая реплика также периодически перечитывает control plane
+(`GOGATE_CONTROL_RELOAD_INTERVAL`, по умолчанию 30s), поэтому отзыв ключа
+применяется на всех репликах в пределах интервала. `POST /reload` нужен, если
+провайдер появился/исчез по DNS (например, контейнер Ollama был запущен после
+gogate) или если control plane меняли напрямую в БД.
 
 ## Hot reload и Ollama
 

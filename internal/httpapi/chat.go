@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,9 +11,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"crypto/rand"
-	"encoding/hex"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -34,6 +33,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	ctx, span := observability.Tracer().Start(r.Context(), "gateway.chat")
 	defer span.End()
 	r = r.WithContext(ctx)
+	if h.cfg.RequestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(r.Context(), h.cfg.RequestTimeout)
+		defer cancel()
+		r = r.WithContext(ctx)
+	}
 	id, _ := reqctx.IdentityFrom(r.Context())
 
 	var req chatRequest
@@ -42,13 +47,16 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			apierr.Write(w, r, http.StatusRequestEntityTooLarge, "invalid_request_error", "request_too_large", "request body is too large")
+			h.finish(r, outcome{Status: http.StatusRequestEntityTooLarge, Latency: time.Since(start), ErrorCode: "request_too_large"})
 			return
 		}
 		apierr.BadRequest(w, r, "invalid_json", "invalid JSON body")
+		h.finish(r, outcome{Status: http.StatusBadRequest, Latency: time.Since(start), ErrorCode: "invalid_json"})
 		return
 	}
 	if err := ensureEOF(dec); err != nil {
 		apierr.BadRequest(w, r, "invalid_json", "unexpected data after JSON body")
+		h.finish(r, outcome{Status: http.StatusBadRequest, Latency: time.Since(start), ErrorCode: "invalid_json"})
 		return
 	}
 	if errCode, msg := h.validate(&req); errCode != "" {
@@ -77,6 +85,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	snap := h.control.Snapshot()
 	if snap == nil {
 		apierr.Unavailable(w, r, "not_ready", "gateway is not ready")
+		h.finish(r, outcome{Model: req.Model, Status: http.StatusServiceUnavailable, Latency: time.Since(start), ErrorCode: "not_ready", PII: piiRedacted})
 		return
 	}
 	if len(snap.Providers.ForModel(req.Model)) == 0 {
@@ -86,10 +95,18 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	maxOut := h.maxOutput(req)
-	_, reserveTokens, estimatedCost := h.estimate(snap, req.Model, messages, maxOut)
 	limits := h.limits(snap, id)
 	if !h.cfg.RateLimitEnabled {
 		limits = nil
+	}
+	_, reserveTokens, estimatedCost, priceKnown := h.estimate(snap, req.Model, messages, maxOut)
+	if h.cfg.BudgetEnabled && hasMonthlyBudget(limits) && !priceKnown {
+		if h.metrics != nil {
+			h.metrics.IncPricingMissing(h.firstProvider(snap, req.Model), req.Model)
+		}
+		apierr.Unavailable(w, r, "pricing_unavailable", "pricing is not configured for this model")
+		h.finish(r, outcome{Model: req.Model, Status: http.StatusServiceUnavailable, Latency: time.Since(start), ErrorCode: "pricing_unavailable", PII: piiRedacted})
+		return
 	}
 
 	admitCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -122,10 +139,15 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheKey, promptHash, prompt := cache.Key(cache.KeyInput{
+	keyInput := cache.KeyInput{
 		TenantID: id.TenantID, Model: req.Model, Messages: messages,
-		Temperature: req.Temperature, TopP: req.TopP, MaxTokens: req.MaxTokens, Stop: stop, Seed: req.Seed,
-	})
+		Temperature: req.Temperature, TopP: req.TopP, MaxTokens: req.MaxTokens,
+		MaxCompletion: req.MaxCompletionTokens, Stop: stop, Seed: req.Seed,
+		PresencePenalty: req.PresencePenalty, FrequencyPenalty: req.FrequencyPenalty,
+		PIIRedaction: h.cfg.PIIRedactionEnabled,
+	}
+	cacheKey, promptHash, prompt := cache.Key(keyInput)
+	paramsHash := cache.ParamsHash(keyInput)
 
 	if !req.Stream {
 		if cached := h.lookupExact(r.Context(), cacheKey); cached != nil {
@@ -133,7 +155,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if h.semantic != nil {
-			entry, err := h.semantic.Lookup(r.Context(), id.TenantID, req.Model, prompt)
+			entry, err := h.semantic.Lookup(r.Context(), id.TenantID, req.Model, prompt, paramsHash)
 			if err != nil {
 				h.log.Warn("semantic cache lookup failed", "error", err)
 			} else if entry != nil {
@@ -144,8 +166,6 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-	} else if h.metrics != nil {
-		h.metrics.IncCacheHit("bypass")
 	}
 
 	maxTokens := req.MaxTokens
@@ -165,10 +185,10 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Stream:           req.Stream,
 	}
 	if req.Stream {
-		h.stream(w, r, start, req, preq, id, limits, reserveTokens, estimatedCost, cacheKey, prompt, promptHash, piiRedacted)
+		h.stream(w, r, start, req, preq, id, limits, reserveTokens, estimatedCost, cacheKey, prompt, promptHash, paramsHash, piiRedacted)
 		return
 	}
-	h.nonStream(w, r, start, req, preq, snap, id, limits, reserveTokens, estimatedCost, cacheKey, prompt, promptHash, piiRedacted)
+	h.nonStream(w, r, start, req, preq, snap, id, limits, reserveTokens, estimatedCost, cacheKey, prompt, promptHash, paramsHash, piiRedacted)
 }
 
 func (h *Handler) validate(req *chatRequest) (code, message string) {
@@ -243,11 +263,11 @@ func (h *Handler) respondCached(w http.ResponseWriter, r *http.Request, start ti
 	_, _ = w.Write(cached.Response)
 	h.finish(r, outcome{
 		Model: req.Model, Provider: cached.Provider, Cache: kind, Stream: false,
-		Status: http.StatusOK, Latency: time.Since(start), PII: piiRedacted,
+		Status: http.StatusOK, Usage: cached.Usage, CostUSD: 0, Latency: time.Since(start), PII: piiRedacted,
 	})
 }
 
-func (h *Handler) nonStream(w http.ResponseWriter, r *http.Request, start time.Time, req chatRequest, preq provider.Request, snap *control.Snapshot, id reqctx.Identity, limits []ratelimit.Limit, reservedTokens int, reservedCost float64, cacheKey, prompt string, promptHash []byte, piiRedacted bool) {
+func (h *Handler) nonStream(w http.ResponseWriter, r *http.Request, start time.Time, req chatRequest, preq provider.Request, snap *control.Snapshot, id reqctx.Identity, limits []ratelimit.Limit, reservedTokens int, reservedCost float64, cacheKey, prompt string, promptHash, paramsHash []byte, piiRedacted bool) {
 	sess, err := h.orch.Open(r.Context(), preq)
 	if err != nil {
 		h.writeOpenError(w, r, start, req, limits, reservedTokens, reservedCost, piiRedacted, err)
@@ -269,19 +289,10 @@ func (h *Handler) nonStream(w http.ResponseWriter, r *http.Request, start time.T
 			break
 		}
 		if err != nil {
-			h.settle(r.Context(), limits, reservedTokens, reservedCost, provider.Usage{}, 0)
-			if h.metrics != nil {
-				h.metrics.IncUpstreamError(sess.Provider(), errorKind(err))
-			}
-			if r.Context().Err() != nil {
-				h.finish(r, outcome{Model: req.Model, Provider: sess.Provider(), Stream: false, Status: 499, Latency: time.Since(start), ErrorCode: "client_canceled", PII: piiRedacted})
-				return
-			}
-			apierr.Upstream(w, r, "upstream_stream_error", "upstream response failed")
-			h.finish(r, outcome{Model: req.Model, Provider: sess.Provider(), Stream: false, Status: http.StatusBadGateway, Latency: time.Since(start), ErrorCode: "upstream_stream_error", PII: piiRedacted})
+			h.writeOpenError(w, r, start, req, limits, reservedTokens, reservedCost, piiRedacted, err)
 			return
 		}
-		if chunk.ID != "" {
+		if respID == "" && chunk.ID != "" {
 			respID = chunk.ID
 		}
 		if chunk.Created > 0 {
@@ -319,7 +330,10 @@ func (h *Handler) nonStream(w http.ResponseWriter, r *http.Request, start time.T
 	if respID == "" {
 		respID = newCompletionID()
 	}
-	price := snap.PriceFor(sess.Provider(), req.Model)
+	price, priceKnown := snap.PriceFor(sess.Provider(), req.Model)
+	if !priceKnown && h.metrics != nil {
+		h.metrics.IncPricingMissing(sess.Provider(), req.Model)
+	}
 	actualCost := cost.Calculate(cost.Price{Input: price.InputUSDPer1M, Output: price.OutputUSDPer1M}, usage.PromptTokens, usage.CompletionTokens)
 	h.settle(r.Context(), limits, reservedTokens, reservedCost, *usage, actualCost)
 
@@ -344,7 +358,7 @@ func (h *Handler) nonStream(w http.ResponseWriter, r *http.Request, start time.T
 	if h.semantic != nil {
 		usageJSON, _ := json.Marshal(*usage)
 		sctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		if err := h.semantic.Store(sctx, id.TenantID, req.Model, prompt, sess.Provider(), promptHash, body, usageJSON, actualCost); err != nil {
+		if err := h.semantic.Store(sctx, id.TenantID, req.Model, prompt, paramsHash, sess.Provider(), promptHash, body, usageJSON, actualCost); err != nil {
 			h.log.Warn("semantic cache store failed", "error", err)
 		}
 		cancel()
@@ -355,7 +369,7 @@ func (h *Handler) nonStream(w http.ResponseWriter, r *http.Request, start time.T
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) stream(w http.ResponseWriter, r *http.Request, start time.Time, req chatRequest, preq provider.Request, id reqctx.Identity, limits []ratelimit.Limit, reservedTokens int, reservedCost float64, cacheKey, prompt string, promptHash []byte, piiRedacted bool) {
+func (h *Handler) stream(w http.ResponseWriter, r *http.Request, start time.Time, req chatRequest, preq provider.Request, id reqctx.Identity, limits []ratelimit.Limit, reservedTokens int, reservedCost float64, cacheKey, prompt string, promptHash, paramsHash []byte, piiRedacted bool) {
 	sess, err := h.orch.Open(r.Context(), preq)
 	if err != nil {
 		h.writeOpenError(w, r, start, req, limits, reservedTokens, reservedCost, piiRedacted, err)
@@ -363,50 +377,73 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, start time.Time
 	}
 	defer func() { _ = sess.Close() }()
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		h.settle(r.Context(), limits, reservedTokens, reservedCost, provider.Usage{}, 0)
-		apierr.Internal(w, r, "streaming is not supported by this server")
-		h.finish(r, outcome{Model: req.Model, Provider: sess.Provider(), Stream: true, Status: http.StatusInternalServerError, Latency: time.Since(start), ErrorCode: "stream_unsupported", PII: piiRedacted})
-		return
-	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("X-Gogate-Cache", "BYPASS")
 	w.Header().Set("X-Gogate-Provider", sess.Provider())
+
+	rc := http.NewResponseController(w)
+	if h.cfg.StreamIdleTimeout > 0 {
+		_ = rc.SetWriteDeadline(time.Now().Add(h.cfg.StreamIdleTimeout))
+	}
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	if err := rc.Flush(); err != nil {
+		_ = sess.Close()
+		h.settle(r.Context(), limits, reservedTokens, reservedCost, provider.Usage{}, 0)
+		h.finish(r, outcome{Model: req.Model, Provider: sess.Provider(), Stream: true, Status: 499, Latency: time.Since(start), ErrorCode: "client_disconnected", PII: piiRedacted})
+		return
+	}
 
 	includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
-	rc := http.NewResponseController(w)
 	var content strings.Builder
 	var usage *provider.Usage
 	usageSent := false
 	errCode := ""
-	respID := newCompletionID()
+	writeFailed := false
+	respID := ""
 	model := req.Model
 	created := time.Now().Unix()
 	first := true
 
 	for {
+		if ctxErr := r.Context().Err(); ctxErr != nil {
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				errCode = "timeout"
+			} else {
+				errCode = "client_canceled"
+			}
+			writeFailed = true
+			break
+		}
 		chunk, err := sess.Next(r.Context())
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
 			errCode = errorKind(err)
+			if errors.Is(r.Context().Err(), context.DeadlineExceeded) {
+				errCode = "timeout"
+			}
 			if h.metrics != nil {
 				h.metrics.IncUpstreamError(sess.Provider(), errCode)
 			}
 			if r.Context().Err() == nil {
-				writeSSEError(w, "upstream response failed")
+				if werr := writeSSEError(w, "upstream response failed"); werr != nil {
+					writeFailed = true
+				}
+			} else {
+				writeFailed = true
 			}
 			break
 		}
-		if chunk.ID != "" {
-			respID = chunk.ID
+		if respID == "" {
+			if chunk.ID != "" {
+				respID = chunk.ID
+			} else {
+				respID = newCompletionID()
+			}
 		}
 		if chunk.Created > 0 {
 			created = chunk.Created
@@ -437,26 +474,45 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, start time.Time
 			out.Usage = &u
 			usageSent = true
 		}
-		if respID == "" {
-			out.ID = newCompletionID()
-		}
-		writeSSE(w, out)
 		if h.cfg.StreamIdleTimeout > 0 {
-			_ = rc.SetWriteDeadline(time.Now().Add(h.cfg.StreamIdleTimeout))
+			if derr := rc.SetWriteDeadline(time.Now().Add(h.cfg.StreamIdleTimeout)); derr != nil && !errors.Is(derr, http.ErrNotSupported) {
+				errCode = "write_deadline"
+				writeFailed = true
+				break
+			}
 		}
-		flusher.Flush()
+		if err := writeSSE(w, out); err != nil {
+			errCode = "client_disconnected"
+			writeFailed = true
+			break
+		}
+		if err := rc.Flush(); err != nil {
+			errCode = "client_disconnected"
+			writeFailed = true
+			break
+		}
 	}
 
-	if includeUsage && !usageSent {
+	if respID == "" {
+		respID = newCompletionID()
+	}
+	if !writeFailed && includeUsage && !usageSent {
 		if usage == nil {
 			u := totalUsage(tokenest.Prompt(preq.Messages), tokenest.Response(content.String()))
 			usage = &u
 		}
 		u := toUsageDTO(*usage)
-		writeSSE(w, chatChunk{ID: respID, Object: "chat.completion.chunk", Created: created, Model: model, Choices: []chunkChoiceDTO{}, Usage: &u})
+		if err := writeSSE(w, chatChunk{ID: respID, Object: "chat.completion.chunk", Created: created, Model: model, Choices: []chunkChoiceDTO{}, Usage: &u}); err != nil {
+			writeFailed = true
+		}
 	}
-	_, _ = io.WriteString(w, "data: [DONE]\n\n")
-	flusher.Flush()
+	if !writeFailed {
+		if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
+			writeFailed = true
+		} else if err := rc.Flush(); err != nil {
+			writeFailed = true
+		}
+	}
 	_ = rc.SetWriteDeadline(time.Time{})
 
 	if usage == nil {
@@ -467,30 +523,49 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, start time.Time
 	}
 	price := control.Price{}
 	if snap := h.control.Snapshot(); snap != nil {
-		price = snap.PriceFor(sess.Provider(), req.Model)
+		var known bool
+		price, known = snap.PriceFor(sess.Provider(), req.Model)
+		if !known && h.metrics != nil {
+			h.metrics.IncPricingMissing(sess.Provider(), req.Model)
+		}
 	}
 	actualCost := cost.Calculate(cost.Price{Input: price.InputUSDPer1M, Output: price.OutputUSDPer1M}, usage.PromptTokens, usage.CompletionTokens)
 	h.settle(r.Context(), limits, reservedTokens, reservedCost, *usage, actualCost)
 	status := http.StatusOK
-	if r.Context().Err() != nil {
-		errCode = "client_canceled"
+	if writeFailed {
+		if errCode == "" {
+			errCode = "client_disconnected"
+		}
+		if errCode != "timeout" {
+			status = 499
+		}
 	}
 	h.finish(r, outcome{Model: req.Model, Provider: sess.Provider(), Cache: "BYPASS", Stream: true, Status: status, Usage: *usage, CostUSD: actualCost, Latency: time.Since(start), ErrorCode: errCode, PII: piiRedacted})
 }
 
 func (h *Handler) writeOpenError(w http.ResponseWriter, r *http.Request, start time.Time, req chatRequest, limits []ratelimit.Limit, reservedTokens int, reservedCost float64, piiRedacted bool, err error) {
 	h.settle(r.Context(), limits, reservedTokens, reservedCost, provider.Usage{}, 0)
-	status, code, msg := mapOpenError(err)
-	if r.Context().Err() != nil {
+	mapErr := err
+	if errors.Is(r.Context().Err(), context.DeadlineExceeded) && !errors.Is(err, orchestrator.ErrFirstByteTimeout) {
+		mapErr = context.DeadlineExceeded
+	}
+	status, code, msg := mapOpenError(mapErr)
+	if r.Context().Err() != nil && !errors.Is(r.Context().Err(), context.DeadlineExceeded) {
 		h.finish(r, outcome{Model: req.Model, Status: 499, Latency: time.Since(start), ErrorCode: "client_canceled", PII: piiRedacted})
 		return
 	}
 	if h.metrics != nil {
 		h.metrics.IncUpstreamError(upstreamProvider(err), errorKind(err))
 	}
+	var ue *provider.UpstreamError
+	if errors.As(err, &ue) && ue.RetryAfter > 0 {
+		w.Header().Set("Retry-After", ratelimit.RetryAfterHeader(ue.RetryAfter))
+	}
 	switch status {
-	case http.StatusNotFound:
-		apierr.NotFound(w, r, code, msg)
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		apierr.Write(w, r, status, "invalid_request_error", code, msg)
+	case http.StatusTooManyRequests:
+		apierr.RateLimited(w, r, code, msg, w.Header().Get("Retry-After"))
 	case http.StatusServiceUnavailable:
 		apierr.Unavailable(w, r, code, msg)
 	case http.StatusGatewayTimeout:
@@ -502,12 +577,26 @@ func (h *Handler) writeOpenError(w http.ResponseWriter, r *http.Request, start t
 }
 
 func mapOpenError(err error) (int, string, string) {
+	var ue *provider.UpstreamError
+	if errors.As(err, &ue) {
+		switch {
+		case ue.StatusCode == http.StatusTooManyRequests:
+			return http.StatusTooManyRequests, "rate_limit_exceeded", "upstream rate limit exceeded"
+		case ue.StatusCode == http.StatusBadRequest, ue.StatusCode == http.StatusNotFound,
+			ue.StatusCode == http.StatusRequestEntityTooLarge, ue.StatusCode == http.StatusUnprocessableEntity:
+			return ue.StatusCode, "upstream_invalid_request", "upstream rejected the request"
+		case ue.StatusCode == http.StatusUnauthorized || ue.StatusCode == http.StatusForbidden:
+			return http.StatusBadGateway, "upstream_auth_error", "upstream rejected gateway credentials"
+		case ue.StatusCode >= 500:
+			return http.StatusBadGateway, "upstream_error", "upstream failed before the first byte"
+		}
+	}
 	switch {
 	case errors.Is(err, orchestrator.ErrModelNotFound):
 		return http.StatusNotFound, "model_not_found", "model is not available"
 	case errors.Is(err, orchestrator.ErrAllProvidersUnavailable):
 		return http.StatusServiceUnavailable, "all_providers_unavailable", "all providers are unavailable"
-	case errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, orchestrator.ErrFirstByteTimeout), errors.Is(err, orchestrator.ErrStreamIdle), errors.Is(err, context.DeadlineExceeded):
 		return http.StatusGatewayTimeout, "upstream_timeout", "upstream timed out before the first byte"
 	default:
 		return http.StatusBadGateway, "upstream_error", "all providers failed before the first byte"
@@ -523,30 +612,54 @@ func upstreamProvider(err error) string {
 }
 
 func errorKind(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) {
+	var ue *provider.UpstreamError
+	if errors.As(err, &ue) {
+		switch {
+		case ue.StatusCode == http.StatusTooManyRequests:
+			return "rate_limited"
+		case ue.StatusCode >= 500:
+			return "upstream_5xx"
+		case ue.StatusCode >= 400:
+			return "upstream_4xx"
+		case ue.StatusCode == 0:
+			return "network"
+		}
+	}
+	switch {
+	case errors.Is(err, orchestrator.ErrFirstByteTimeout), errors.Is(err, orchestrator.ErrStreamIdle), errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
-	}
-	if errors.Is(err, context.Canceled) {
+	case errors.Is(err, context.Canceled):
 		return "canceled"
+	default:
+		return "error"
 	}
-	return "error"
 }
 
-func writeSSE(w io.Writer, v any) {
+func writeSSE(w io.Writer, v any) error {
 	body, err := json.Marshal(v)
 	if err != nil {
-		return
+		return err
 	}
-	_, _ = w.Write([]byte("data: "))
-	_, _ = w.Write(body)
-	_, _ = io.WriteString(w, "\n\n")
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		return err
+	}
+	if _, err := w.Write(body); err != nil {
+		return err
+	}
+	_, err = io.WriteString(w, "\n\n")
+	return err
 }
 
-func writeSSEError(w io.Writer, message string) {
+func writeSSEError(w io.Writer, message string) error {
 	body, _ := json.Marshal(apierr.Envelope{Error: apierr.Error{Message: message, Type: "upstream_error", Code: "upstream_stream_error"}})
-	_, _ = w.Write([]byte("data: "))
-	_, _ = w.Write(body)
-	_, _ = io.WriteString(w, "\n\n")
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		return err
+	}
+	if _, err := w.Write(body); err != nil {
+		return err
+	}
+	_, err := io.WriteString(w, "\n\n")
+	return err
 }
 
 func newCompletionID() string {

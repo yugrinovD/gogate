@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// ValidateUpstreamURL rejects unsafe provider URLs. Only administrators can set
-// these URLs, but validating them defends against misconfiguration and SSRF.
-func ValidateUpstreamURL(raw string, allowPrivate bool) error {
+// ValidateUpstreamURLSyntax performs offline URL validation. It intentionally
+// does not resolve DNS, so control-plane reloads do not depend on the resolver.
+func ValidateUpstreamURLSyntax(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return fmt.Errorf("upstream url is empty")
@@ -26,10 +26,20 @@ func ValidateUpstreamURL(raw string, allowPrivate bool) error {
 	if u.User != nil {
 		return fmt.Errorf("upstream url must not contain credentials")
 	}
-	host := u.Hostname()
-	if host == "" {
+	if u.Hostname() == "" {
 		return fmt.Errorf("upstream url has no host")
 	}
+	return nil
+}
+
+// ValidateUpstreamHost resolves a host and rejects metadata, link-local,
+// multicast and (unless explicitly allowed) private/loopback addresses.
+func ValidateUpstreamHost(raw string, allowPrivate bool) error {
+	if err := ValidateUpstreamURLSyntax(raw); err != nil {
+		return err
+	}
+	u, _ := url.Parse(raw)
+	host := u.Hostname()
 	if strings.EqualFold(host, "metadata.google.internal") || strings.EqualFold(host, "metadata") {
 		return fmt.Errorf("metadata host is not allowed")
 	}
@@ -48,6 +58,12 @@ func ValidateUpstreamURL(raw string, allowPrivate bool) error {
 		return fmt.Errorf("upstream host did not resolve")
 	}
 	return nil
+}
+
+// ValidateUpstreamURL is the full validation used when administrators create or
+// update a provider.
+func ValidateUpstreamURL(raw string, allowPrivate bool) error {
+	return ValidateUpstreamHost(raw, allowPrivate)
 }
 
 func validateIP(ip net.IP, allowPrivate bool) error {

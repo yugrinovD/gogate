@@ -9,9 +9,11 @@ import (
 )
 
 var (
-	emailRe = regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b`)
-	phoneRe = regexp.MustCompile(`(?:\+?\d[\d\s().\-]{7,}\d)`)
-	cardRe  = regexp.MustCompile(`\b(?:\d[ -]?){12,18}\d\b`)
+	emailRe    = regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b`)
+	phoneRe    = regexp.MustCompile(`(?:\+?\d[\d\s().\-]{7,}\d)`)
+	cardRe     = regexp.MustCompile(`\b(?:\d[ -]?){12,18}\d\b`)
+	dateTimeRe = regexp.MustCompile(`\b\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?)?\b`)
+	timeRe     = regexp.MustCompile(`\b\d{1,2}:\d{2}(?::\d{2})?\b`)
 )
 
 // RedactText replaces likely PII and returns the number of replacements.
@@ -21,7 +23,7 @@ func RedactText(s string) (string, int) {
 	count += n
 	s, n = replaceMatches(s, cardRe, "[REDACTED_CARD]", luhnMatch)
 	count += n
-	s, n = replaceMatches(s, phoneRe, "[REDACTED_PHONE]", nil)
+	s, n = replaceMatches(s, phoneRe, "[REDACTED_PHONE]", phoneMatch)
 	count += n
 	return s, count
 }
@@ -54,6 +56,26 @@ func replaceMatches(s string, re *regexp.Regexp, replacement string, validate fu
 	return out, count
 }
 
+func phoneMatch(m string) bool {
+	if dateTimeRe.MatchString(m) || timeRe.MatchString(m) {
+		return false
+	}
+	digits := 0
+	for _, r := range m {
+		if r >= '0' && r <= '9' {
+			digits++
+		}
+	}
+	if digits < 10 || digits > 15 {
+		return false
+	}
+	// Long contiguous digit runs are usually order/ticket IDs, not phones.
+	if digits >= 12 && !strings.ContainsAny(m, "+() .-") {
+		return false
+	}
+	return true
+}
+
 func luhnMatch(m string) bool {
 	var digits []int
 	for _, r := range m {
@@ -78,9 +100,4 @@ func luhnMatch(m string) bool {
 		alt = !alt
 	}
 	return sum%10 == 0
-}
-
-// LooksLikePII is a cheap heuristic used by tests and diagnostics.
-func LooksLikePII(s string) bool {
-	return strings.Contains(s, "@") || phoneRe.MatchString(s) || cardRe.MatchString(s)
 }

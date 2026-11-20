@@ -14,13 +14,15 @@ import (
 
 // Handler serves /healthz and /readyz.
 type Handler struct {
-	store *store.Store
-	redis *redis.Client
+	store         *store.Store
+	redis         *redis.Client
+	redisRequired bool
 }
 
-// New creates a health handler.
-func New(st *store.Store, rdb *redis.Client) *Handler {
-	return &Handler{store: st, redis: rdb}
+// New creates a health handler. redisRequired controls whether a Redis outage
+// makes the process not ready (fail-closed rate limiting).
+func New(st *store.Store, rdb *redis.Client, redisRequired bool) *Handler {
+	return &Handler{store: st, redis: rdb, redisRequired: redisRequired}
 }
 
 // Live handles GET /healthz.
@@ -36,16 +38,19 @@ func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
 	ready := true
 
 	if err := h.store.Ping(ctx); err != nil {
-		components["postgres"] = map[string]any{"ok": false, "error": err.Error()}
+		components["postgres"] = map[string]any{"ok": false}
 		ready = false
 	} else {
 		components["postgres"] = map[string]any{"ok": true}
 	}
-	if err := h.redis.Ping(ctx).Err(); err != nil {
-		components["redis"] = map[string]any{"ok": false, "error": err.Error()}
-		ready = false
+	if h.redis != nil {
+		err := h.redis.Ping(ctx).Err()
+		components["redis"] = map[string]any{"ok": err == nil, "required": h.redisRequired}
+		if err != nil && h.redisRequired {
+			ready = false
+		}
 	} else {
-		components["redis"] = map[string]any{"ok": true}
+		components["redis"] = map[string]any{"ok": false, "required": false}
 	}
 	status := http.StatusOK
 	state := "ready"

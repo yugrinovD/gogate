@@ -89,9 +89,9 @@ frame and `data: [DONE]` are sent; fallback is forbidden at that point.
 | 404 | `model_not_found` | model is not configured |
 | 413 | `request_too_large` | body limit exceeded |
 | 429 | `rate_limit_exceeded`, `insufficient_quota` | RPM/TPM/quota/budget |
-| 502 | `upstream_error` | all providers failed before first byte |
+| 502 | `upstream_error` | upstream 5xx/network or auth configuration error |
 | 503 | `all_providers_unavailable` | all breakers open |
-| 504 | `upstream_timeout` | first-byte timeout |
+| 504 | `upstream_timeout` | first-byte or stream-idle timeout |
 
 ## Admin API
 
@@ -109,7 +109,7 @@ Authentication: `Authorization: Bearer $GOGATE_ADMIN_TOKEN`.
 | GET/POST | `/admin/v1/keys` | list/create key |
 | PATCH/DELETE | `/admin/v1/keys/{id}` | enable/disable/delete |
 | GET/POST | `/admin/v1/providers` | list/create provider |
-| PATCH/DELETE | `/admin/v1/providers/{id}` | update/delete |
+| PATCH/DELETE | `/admin/v1/providers/{id}` | partial update; name is immutable / delete |
 | POST | `/admin/v1/providers/{id}/test` | provider health check |
 | GET/POST | `/admin/v1/quotas` | list/upsert quota |
 | DELETE | `/admin/v1/quotas/{id}` | delete quota |
@@ -162,6 +162,6 @@ Key and tenant quotas are enforced together. `null`/missing means unlimited.
 }
 ```
 
-`api_key_env` names the env variable holding the upstream key; the secret is not
-stored in the database. Mock `config` keys: `latency_ms`, `chunk_delay_ms`,
+`api_key_env` names the env variable holding the upstream key; it must start
+with `GOGATE_UPSTREAM_`, and the secret is not stored in the database. Mock `config` keys: `latency_ms`, `chunk_delay_ms`,
 `fail_before_first`, `fail_after_chunks`, `fail_rate`.

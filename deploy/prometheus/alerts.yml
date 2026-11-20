@@ -32,6 +32,12 @@ groups:
           severity: info
         annotations:
           summary: clients are being rate limited
+      - alert: GogatePricingMissing
+        expr: increase(gogate_pricing_missing_total[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: requests are being served without configured model pricing
       - alert: GogateUsageDropped
         expr: increase(gogate_usage_dropped_total[5m]) > 0
         labels:

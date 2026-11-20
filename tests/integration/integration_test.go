@@ -120,9 +120,17 @@ func TestGatewayEndToEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	for _, pair := range [][2]string{
+		{"mock", "mock"}, {"mock", "mock-fast"},
+		{"fallback-bad", "fallback"}, {"fallback-good", "fallback"},
+	} {
+		if err := st.EnsureZeroPrice(ctx, pair[0], pair[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	httpClient := provider.NewHTTPClient()
-	manager := control.NewManager(st, logger, true, httpClient)
+	manager := control.NewManager(st, logger, true, httpClient, "GOGATE_UPSTREAM_")
 	if err := manager.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -142,14 +150,14 @@ func TestGatewayEndToEnd(t *testing.T) {
 		Config: cfg, Control: manager, Orch: orch, Limiter: limiter,
 		Exact: exact, Semantic: semantic, Usage: writer, Metrics: metrics, Logger: logger,
 	})
-	healthHandler := health.New(st, rdb)
+	healthHandler := health.New(st, rdb, true)
 	adminHandler := adminapi.New(adminapi.Options{
 		Config: cfg, Store: st, Control: manager, Orch: orch, Redis: rdb,
 		Exact: exact, Semantic: semantic, Logger: logger,
 	})
 
 	snapshotFn := func() *control.Snapshot { return manager.Snapshot() }
-	chatAuth := middleware.APIKey(snapshotFn, cfg.Pepper, func(id reqctx.Identity) { writer.TouchKey(id.KeyID) })
+	chatAuth := middleware.APIKey(snapshotFn, cfg.Pepper, cfg.MaxAPIKeyBytes, func(id reqctx.Identity) { writer.TouchKey(id.KeyID) })
 
 	publicMux := http.NewServeMux()
 	publicMux.HandleFunc("GET /healthz", healthHandler.Live)
@@ -170,6 +178,34 @@ func TestGatewayEndToEnd(t *testing.T) {
 	a.upsertQuota(t, map[string]any{
 		"tenant_id": a.tenantID, "rpm": 100000, "tpm": 100000000,
 		"daily_requests": 10000000, "daily_tokens": 10000000000, "monthly_cost_usd": 1000,
+	})
+
+	t.Run("redis lua limiter", func(t *testing.T) {
+		rpm := 1
+		limiter := ratelimit.New(rdb)
+		scope := ratelimit.Limit{ID: "{t:lua-test}:tenant", RPM: &rpm}
+		first, err := limiter.Admit(ctx, []ratelimit.Limit{scope}, 1, 0)
+		if err != nil || !first.Allowed {
+			t.Fatalf("first decision=%+v err=%v", first, err)
+		}
+		second, err := limiter.Admit(ctx, []ratelimit.Limit{scope}, 1, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if second.Allowed || second.Reason != "rpm" || second.RetryAfter <= 0 {
+			t.Fatalf("second decision=%+v", second)
+		}
+	})
+
+	t.Run("control plane reload", func(t *testing.T) {
+		before := len(manager.Snapshot().KeysByPrefix)
+		if err := manager.Reload(ctx); err != nil {
+			t.Fatal(err)
+		}
+		after := len(manager.Snapshot().KeysByPrefix)
+		if after < before {
+			t.Fatalf("keys disappeared after reload: %d -> %d", before, after)
+		}
 	})
 
 	t.Run("models", func(t *testing.T) {
@@ -290,15 +326,25 @@ func TestGatewayEndToEnd(t *testing.T) {
 
 	t.Run("semantic cache", func(t *testing.T) {
 		hash := []byte("hash-one")
-		if err := semantic.Store(ctx, a.tenantID, "mock", "semantic hello world", "mock", hash, []byte(`{"id":"semantic"}`), []byte(`{}`), 0); err != nil {
+		shortMax, longMax := 10, 1000
+		paramsShort := cache.ParamsHash(cache.KeyInput{Model: "mock", MaxTokens: &shortMax})
+		paramsLong := cache.ParamsHash(cache.KeyInput{Model: "mock", MaxTokens: &longMax})
+		if err := semantic.Store(ctx, a.tenantID, "mock", "semantic hello world", paramsShort, "mock", hash, []byte(`{"id":"semantic"}`), []byte(`{}`), 0); err != nil {
 			t.Fatal(err)
 		}
-		entry, err := semantic.Lookup(ctx, a.tenantID, "mock", "semantic hello world")
+		entry, err := semantic.Lookup(ctx, a.tenantID, "mock", "semantic hello world", paramsShort)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if entry == nil || !strings.Contains(string(entry.Response), "semantic") {
 			t.Fatalf("entry=%+v", entry)
+		}
+		wrong, err := semantic.Lookup(ctx, a.tenantID, "mock", "semantic hello world", paramsLong)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if wrong != nil {
+			t.Fatalf("semantic cache must respect generation params, got %+v", wrong)
 		}
 	})
 
@@ -325,6 +371,96 @@ func TestGatewayEndToEnd(t *testing.T) {
 		status, _ := a.request(t, http.MethodGet, "/admin/v1/health", nil, a.apiKey)
 		if status != http.StatusNotFound {
 			t.Fatalf("status=%d", status)
+		}
+	})
+
+	t.Run("admin validation", func(t *testing.T) {
+		missingTenant := "00000000-0000-0000-0000-000000000000"
+		status, _ := a.adminRequest(t, http.MethodPost, "/admin/v1/keys", map[string]any{"tenant_id": missingTenant, "name": "missing"})
+		if status != http.StatusNotFound {
+			t.Fatalf("missing tenant status=%d", status)
+		}
+		status, _ = a.adminRequest(t, http.MethodDelete, "/admin/v1/keys/not-a-uuid", nil)
+		if status != http.StatusBadRequest {
+			t.Fatalf("invalid uuid status=%d", status)
+		}
+		otherTenant := a.createTenant(t, "other")
+		otherKey, _ := a.createKeyWithID(t, otherTenant, "other-key", nil)
+		_ = otherKey
+		otherKeyID := ""
+		for _, k := range a.listKeys(t, otherTenant) {
+			if k.Name == "other-key" {
+				otherKeyID = k.ID
+			}
+		}
+		status, _ = a.adminRequest(t, http.MethodPost, "/admin/v1/quotas", map[string]any{
+			"tenant_id": a.tenantID, "api_key_id": otherKeyID, "rpm": 1,
+		})
+		if status != http.StatusBadRequest {
+			t.Fatalf("cross-tenant quota status=%d", status)
+		}
+		status, _ = a.adminRequest(t, http.MethodPost, "/admin/v1/quotas", map[string]any{
+			"tenant_id": a.tenantID, "rpm": -1,
+		})
+		if status != http.StatusBadRequest {
+			t.Fatalf("negative quota status=%d", status)
+		}
+		status, _ = a.adminRequest(t, http.MethodPost, "/admin/v1/providers", map[string]any{
+			"name": "unsafe-env", "kind": "mock", "models": []string{"unsafe"},
+			"api_key_env": "AWS_SECRET_ACCESS_KEY",
+		})
+		if status != http.StatusBadRequest {
+			t.Fatalf("unsafe api_key_env status=%d", status)
+		}
+	})
+
+	t.Run("partial provider patch", func(t *testing.T) {
+		var created struct {
+			ID string `json:"id"`
+		}
+		a.adminJSON(t, http.MethodPost, "/admin/v1/providers", map[string]any{
+			"name": "patch-me", "kind": "mock", "models": []string{"patch-me"},
+			"priority": 50, "enabled": true, "timeout_ms": 5000, "max_retries": 0,
+		}, &created)
+		a.adminJSON(t, http.MethodPatch, "/admin/v1/providers/"+created.ID, map[string]any{"priority": 7}, nil)
+		var providers []struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Priority int    `json:"priority"`
+			Enabled  bool   `json:"enabled"`
+		}
+		a.adminJSON(t, http.MethodGet, "/admin/v1/providers", nil, &providers)
+		found := false
+		for _, p := range providers {
+			if p.ID == created.ID {
+				found = true
+				if p.Name != "patch-me" || p.Priority != 7 || !p.Enabled {
+					t.Fatalf("patch result=%+v", p)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("provider not found after patch")
+		}
+		a.adminJSON(t, http.MethodDelete, "/admin/v1/providers/"+created.ID, nil, nil)
+	})
+
+	t.Run("usage survives key deletion", func(t *testing.T) {
+		key, keyID := a.createKeyWithID(t, a.tenantID, "delete-me", nil)
+		payload := map[string]any{"model": "mock", "messages": []map[string]any{{"role": "user", "content": "keep my usage"}}, "max_tokens": 8}
+		status, body := a.request(t, http.MethodPost, "/v1/chat/completions", payload, key)
+		if status != 200 {
+			t.Fatalf("status=%d body=%s", status, body)
+		}
+		time.Sleep(200 * time.Millisecond)
+		a.adminJSON(t, http.MethodDelete, "/admin/v1/keys/"+keyID, nil, nil)
+		time.Sleep(200 * time.Millisecond)
+		var count int
+		if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM usage_daily WHERE api_key_id=$1`, keyID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count == 0 {
+			t.Fatal("usage was deleted together with the key")
 		}
 	})
 
@@ -384,6 +520,32 @@ func (a *app) upsertQuota(t *testing.T, body map[string]any) {
 	t.Helper()
 	var out map[string]any
 	a.adminJSON(t, http.MethodPost, "/admin/v1/quotas", body, &out)
+}
+
+func (a *app) adminRequest(t *testing.T, method, path string, body any) (int, []byte) {
+	t.Helper()
+	req := a.newRequest(t, method, path, body, a.cfg.AdminToken)
+	req.URL.Scheme = "http"
+	req.URL.Host = strings.TrimPrefix(a.admin.URL, "http://")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, raw
+}
+
+type keyInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (a *app) listKeys(t *testing.T, tenantID string) []keyInfo {
+	t.Helper()
+	var keys []keyInfo
+	a.adminJSON(t, http.MethodGet, "/admin/v1/keys?tenant_id="+tenantID, nil, &keys)
+	return keys
 }
 
 func (a *app) adminJSON(t *testing.T, method, path string, body any, out any) {

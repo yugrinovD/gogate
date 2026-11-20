@@ -24,6 +24,6 @@ losing Redis resets counters and cache, not configuration.
 
 - The hot path does not depend on PostgreSQL latency.
 - Multiple instances share one control plane.
-- Changes made directly in the database require `POST /admin/v1/reload` or a
-  periodic reload (admin reload in the current version).
+- Changes made directly in the database are picked up by periodic reload
+  (`GOGATE_CONTROL_RELOAD_INTERVAL`) or `POST /admin/v1/reload`.
 - The snapshot must be thread-safe and atomically replaced.

@@ -144,7 +144,8 @@ Redis Lua, один атомарный вызов на запрос:
 ## Масштабирование
 
 - Горизонтальное: несколько экземпляров за балансировщиком; control plane
-  общий (PostgreSQL), лимиты и кэш общие (Redis).
+  общий (PostgreSQL), лимиты и кэш общие (Redis). Каждая реплика периодически
+  перечитывает control plane и слушает Redis pub/sub `gogate:control:reload`.
 - Для Redis Cluster потребуется отдельная схема ключей: текущие Lua-скрипты
   рассчитаны на один Redis.
 - Stateless public listener, состояние — только в PostgreSQL/Redis.

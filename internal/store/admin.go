@@ -37,6 +37,13 @@ func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
 	return out, rows.Err()
 }
 
+// GetTenant returns a tenant by id.
+func (s *Store) GetTenant(ctx context.Context, id string) (Tenant, error) {
+	var t Tenant
+	err := s.Pool.QueryRow(ctx, `SELECT id::text, name, created_at FROM tenants WHERE id=$1`, id).Scan(&t.ID, &t.Name, &t.CreatedAt)
+	return t, err
+}
+
 // DeleteTenant removes a tenant and all dependent rows.
 func (s *Store) DeleteTenant(ctx context.Context, id string) error {
 	tag, err := s.Pool.Exec(ctx, `DELETE FROM tenants WHERE id=$1`, id)
@@ -94,13 +101,13 @@ func (s *Store) ListAPIKeys(ctx context.Context, tenantID string) ([]APIKey, err
 	return out, rows.Err()
 }
 
-// GetAPIKeyByPrefix looks up a key by its public prefix.
-func (s *Store) GetAPIKeyByPrefix(ctx context.Context, prefix string) (APIKey, error) {
+// GetAPIKeyByID looks up a key by id.
+func (s *Store) GetAPIKeyByID(ctx context.Context, id string) (APIKey, error) {
 	var k APIKey
 	var expires sql.NullTime
 	err := s.Pool.QueryRow(ctx, `
 		SELECT id::text, tenant_id::text, name, key_prefix, key_hash, enabled, expires_at, last_used_at, created_at
-		FROM api_keys WHERE key_prefix=$1`, prefix).
+		FROM api_keys WHERE id=$1`, id).
 		Scan(&k.ID, &k.TenantID, &k.Name, &k.Prefix, &k.Hash, &k.Enabled, &expires, &k.LastUsedAt, &k.CreatedAt)
 	if err != nil {
 		return k, err
@@ -407,15 +414,6 @@ func (s *Store) PurgeSemanticCache(ctx context.Context, tenantID, model string) 
 	return tag.RowsAffected(), nil
 }
 
-// TotalMonthlyCost returns the cost recorded for a tenant in a month.
-func (s *Store) TotalMonthlyCost(ctx context.Context, tenantID string, monthStart time.Time) (float64, error) {
-	var total float64
-	err := s.Pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(cost_usd),0)::float8 FROM usage_daily
-		WHERE tenant_id=$1 AND day >= $2::date`, tenantID, monthStart).Scan(&total)
-	return total, err
-}
-
 func derefString(s *string) string {
 	if s == nil {
 		return ""
@@ -443,11 +441,26 @@ func ValidateProvider(p Provider) error {
 	if p.TimeoutMS <= 0 {
 		p.TimeoutMS = 30000
 	}
-	if p.MaxRetries < 0 {
-		return fmt.Errorf("max_retries must be >= 0")
+	if p.TimeoutMS > 300000 {
+		return fmt.Errorf("timeout_ms must be at most 300000")
+	}
+	if p.MaxRetries < 0 || p.MaxRetries > 5 {
+		return fmt.Errorf("max_retries must be between 0 and 5")
+	}
+	if len(p.Models) == 0 {
+		return fmt.Errorf("at least one model is required")
 	}
 	if p.Kind != "mock" && strings.TrimSpace(p.BaseURL) == "" {
 		return fmt.Errorf("base_url is required for %s", p.Kind)
 	}
 	return nil
+}
+
+// EnsureZeroPrice inserts a zero price only if no price exists for the pair.
+func (s *Store) EnsureZeroPrice(ctx context.Context, providerName, model string) error {
+	_, err := s.Pool.Exec(ctx, `
+		INSERT INTO model_prices(provider, model, input_usd_per_1m, output_usd_per_1m)
+		VALUES($1,$2,0,0)
+		ON CONFLICT (provider, model) DO NOTHING`, providerName, model)
+	return err
 }

@@ -185,6 +185,10 @@ Everything is configured through env. There are no secrets in the repository:
 | `GOGATE_DATABASE_URL` | local DSN | PostgreSQL |
 | `GOGATE_REDIS_ADDR` | `127.0.0.1:6379` | Redis |
 | `GOGATE_MAX_OUTPUT_TOKENS` | `4096` | `max_tokens` upper bound |
+| `GOGATE_MAX_API_KEY_BYTES` | `256` | maximum API key length before hashing |
+| `GOGATE_CONTROL_RELOAD_INTERVAL` | `30s` | periodic control-plane reload for replicas |
+| `GOGATE_UPSTREAM_KEY_PREFIX` | `GOGATE_UPSTREAM_` | allowed `api_key_env` prefix |
+| `GOGATE_ALLOW_PRIVATE_UPSTREAMS` | `false` | private/loopback upstream; demo `.env` enables it for Ollama |
 | `GOGATE_REQUEST_TIMEOUT` | `120s` | overall request timeout |
 | `GOGATE_FIRST_BYTE_TIMEOUT` | `30s` | first-byte timeout |
 | `GOGATE_CACHE_ENABLED` | `true` | exact cache |
@@ -195,6 +199,7 @@ Everything is configured through env. There are no secrets in the repository:
 | `GOGATE_BUDGET_ENABLED` | `true` | monthly cost budgets |
 | `GOGATE_AUDIT_ENABLED` | `true` | request metadata audit |
 | `GOGATE_TRACING_ENABLED` | `false` | OTLP traces |
+| `GOGATE_TRACE_SAMPLE_RATIO` | `1` | trace sampling ratio |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | e.g. `http://jaeger:4318` |
 | `GOGATE_ACCESS_LOG_SAMPLE` | `1` | access log sampling |
 
@@ -229,7 +234,8 @@ Metrics (names follow the spec):
 `gogate_rate_limited_total`, `gogate_upstream_errors_total`,
 `gogate_inflight_requests`, `gogate_retries_total`,
 `gogate_circuit_breaker_state`, `gogate_usage_dropped_total`,
-`gogate_audit_dropped_total`, `gogate_budget_exceeded_total`.
+`gogate_audit_dropped_total`, `gogate_budget_exceeded_total`,
+`gogate_pricing_missing_total`.
 
 - Prometheus: `http://localhost:9092`
 - Grafana: `http://localhost:3000`, dashboard `gogate — AI gateway`
@@ -254,12 +260,12 @@ unique prompt in every request):
 | Requests | 30,001 |
 | RPS | 500.0 |
 | Errors | 0% |
-| p50 | 0.43 ms |
-| p95 | 0.53 ms |
-| p99 | 0.71 ms |
-| max | 43.0 ms |
+| p50 | 0.44 ms |
+| p95 | 0.56 ms |
+| p99 | 0.82 ms |
+| max | 7.35 ms |
 | Baseline mock upstream p99 | 0.21 ms |
-| p99 overhead | ≈ 0.5 ms |
+| p99 overhead | ≈ 0.62 ms |
 | gogate RSS under load | ≈ 60 MiB |
 
 Hardware: 16 vCPU, 31 GiB RAM, Debian 13, Docker 29.10. Results depend on the
@@ -310,18 +316,22 @@ docs/                       # RU/EN documentation and ADRs
 - gogate does not terminate TLS; use a reverse proxy.
 - Text chat only. Tools/function calling, images, audio and embeddings are not part
   of the public API scope (embeddings are only used by the semantic cache).
-- Semantic cache requires pgvector and an embedder; the mock embedder is for
-  demo/tests, a real embedder is needed for quality.
+- Semantic cache requires pgvector and an embedder; the mock embedder is allowed
+  only for demo/tests, production uses an Ollama/OpenAI-compatible embedder.
+  The cache accounts for generation parameters and a fixed 768 dimension.
 - Redis Cluster is not a goal: Lua scripts assume a single Redis (keys use a hash
   tag for future compatibility, but dynamic keys in a cluster need a different scheme).
 - Streaming responses are not PII-redacted (to preserve first-byte latency);
-  requests are redacted when the flag is enabled.
+  requests are always redacted when enabled, and the PII mode is part of the cache key.
 - Usage/audit are asynchronous: there may be a small lag; if queues overflow,
   records are dropped and the drop is visible in metrics.
 - Budgets are soft at settlement: the reservation uses `prompt + max_tokens`, then
   is corrected by actual usage.
 - Limit and budget counters live in Redis; losing Redis resets them (configuration
   and usage remain in PostgreSQL).
+- With multiple replicas, key revocation propagates via periodic reload
+  (`GOGATE_CONTROL_RELOAD_INTERVAL`) or Redis pub/sub, with a window up to the interval.
+- `GOGATE_REQUEST_TIMEOUT` also bounds long streams; increase it for very long generations.
 - Multi-region, Kubernetes and billing are non-goals.
 
 ## Security
@@ -331,7 +341,9 @@ docs/                       # RU/EN documentation and ADRs
 - Body limit, message/token limits, timeouts, CORS disabled by default.
 - SSRF defence: only admins set provider URLs; scheme, userinfo, metadata/link-local
   and private addresses are validated (private addresses need an explicit flag for
-  local Ollama).
+  local Ollama; the flag defaults to false).
+- `api_key_env` is restricted to the `GOGATE_UPSTREAM_` prefix so an admin cannot
+  read an arbitrary process secret and send it to an upstream.
 - pprof only on admin and only behind a flag.
 - Secrets are env-only; `.env` is generated locally and git-ignored.
 

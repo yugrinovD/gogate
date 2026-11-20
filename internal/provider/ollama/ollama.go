@@ -50,6 +50,7 @@ func (p *Provider) Ping(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode >= 300 {
 		return &provider.UpstreamError{Provider: p.name, StatusCode: resp.StatusCode, Message: "ollama health check failed"}
 	}
@@ -115,17 +116,18 @@ func (p *Provider) Chat(ctx context.Context, req provider.Request) (provider.Str
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
 		_ = resp.Body.Close()
-		return nil, &provider.UpstreamError{Provider: p.name, StatusCode: resp.StatusCode, Message: strings.TrimSpace(string(body))}
+		return nil, &provider.UpstreamError{Provider: p.name, StatusCode: resp.StatusCode, Message: strings.TrimSpace(string(body)), RetryAfter: provider.ParseRetryAfter(resp.Header.Get("Retry-After"))}
 	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
-	return &stream{provider: p.name, body: resp.Body, scanner: scanner}, nil
+	return &stream{provider: p.name, body: resp.Body, scanner: scanner, id: "chatcmpl-ollama-" + fmt.Sprint(time.Now().UnixNano())}, nil
 }
 
 type stream struct {
 	provider string
 	body     io.ReadCloser
 	scanner  *bufio.Scanner
+	id       string
 	closed   bool
 }
 
@@ -151,7 +153,7 @@ func (s *stream) Next(ctx context.Context) (provider.Chunk, error) {
 			return provider.Chunk{}, &provider.UpstreamError{Provider: s.provider, Message: r.Error}
 		}
 		chunk := provider.Chunk{
-			ID:      "chatcmpl-ollama-" + fmt.Sprint(time.Now().UnixNano()),
+			ID:      s.id,
 			Created: time.Now().Unix(),
 			Model:   r.Model,
 			Index:   0,
