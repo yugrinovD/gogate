@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+bin
+build
+data
+docs
+*.md
+coverage.out
+coverage.html
+.idea
+.vscode

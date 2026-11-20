@@ -1,0 +1,19 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Local template placeholders and documentation examples"
+paths = [
+  '(^|/)\.env$',
+  '(^|/)\.env\.example$',
+  '(^|/)README(\.en)?\.md$',
+  '(^|/)docs/',
+  '(^|/)build/',
+  '(^|/)bin/',
+]
+regexes = [
+  'replace-with-a-random-',
+  'replace-with-at-least-16-random-characters',
+  '0123456789abcdef',
+  'gogate:local',
+]

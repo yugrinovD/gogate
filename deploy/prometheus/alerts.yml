@@ -1,0 +1,40 @@
+groups:
+  - name: gogate
+    rules:
+      - alert: GogateHighErrorRate
+        expr: |
+          sum(rate(gogate_requests_total{status=~"5.."}[5m]))
+            /
+          clamp_min(sum(rate(gogate_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: gogate 5xx rate is above 5%
+      - alert: GogateLatencyP99High
+        expr: histogram_quantile(0.99, sum(rate(gogate_request_duration_seconds_bucket[5m])) by (le)) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: gogate p99 chat latency is above one second
+      - alert: GogateBreakerOpen
+        expr: max by (provider) (gogate_circuit_breaker_state) >= 2
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: provider circuit breaker is open
+      - alert: GogateRateLimitedSpike
+        expr: sum(rate(gogate_rate_limited_total[5m])) > 10
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: clients are being rate limited
+      - alert: GogateUsageDropped
+        expr: increase(gogate_usage_dropped_total[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: usage records are being dropped

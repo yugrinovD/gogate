@@ -1,0 +1,589 @@
+openapi: 3.1.0
+info:
+  title: gogate admin API
+  version: 1.0.0
+  description: |
+    Administrative control plane. It is served on a separate listener and
+    authenticated with a dedicated admin token. Provider secrets are referenced
+    by environment variable name and are never returned by this API.
+servers:
+  - url: http://localhost:9090
+    description: Local admin listener
+security:
+  - adminAuth: []
+tags:
+  - name: system
+  - name: tenants
+  - name: keys
+  - name: providers
+  - name: quotas
+  - name: prices
+  - name: usage
+  - name: cache
+paths:
+  /admin/v1/health:
+    get:
+      tags: [system]
+      summary: Dependency and provider health
+      operationId: adminHealth
+      responses:
+        '200':
+          description: Health snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/v1/config:
+    get:
+      tags: [system]
+      summary: Redacted runtime configuration
+      operationId: adminConfig
+      responses:
+        '200':
+          description: Configuration without secrets.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /admin/v1/reload:
+    post:
+      tags: [system]
+      summary: Reload the in-memory control plane
+      operationId: adminReload
+      responses:
+        '200':
+          description: Reload result.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /admin/v1/tenants:
+    get:
+      tags: [tenants]
+      summary: List tenants
+      operationId: listTenants
+      responses:
+        '200':
+          description: Tenants.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Tenant'
+    post:
+      tags: [tenants]
+      summary: Create or return a tenant by name
+      operationId: createTenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+      responses:
+        '201':
+          description: Tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+  /admin/v1/tenants/{id}:
+    delete:
+      tags: [tenants]
+      summary: Delete a tenant and its dependent rows
+      operationId: deleteTenant
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '204': {description: Deleted}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /admin/v1/keys:
+    get:
+      tags: [keys]
+      summary: List API keys
+      operationId: listKeys
+      parameters:
+        - name: tenant_id
+          in: query
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Keys (hashes are never returned).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/APIKey'
+    post:
+      tags: [keys]
+      summary: Create an API key
+      description: The plaintext key is returned exactly once.
+      operationId: createKey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, name]
+              properties:
+                tenant_id: {type: string, format: uuid}
+                name: {type: string}
+                expires_at: {type: string, format: date-time}
+      responses:
+        '201':
+          description: New key material.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKeyCreated'
+  /admin/v1/keys/{id}:
+    patch:
+      tags: [keys]
+      summary: Enable or disable a key
+      operationId: updateKey
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: {type: boolean}
+      responses:
+        '204': {description: Updated}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [keys]
+      summary: Delete a key
+      operationId: deleteKey
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '204': {description: Deleted}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /admin/v1/providers:
+    get:
+      tags: [providers]
+      summary: List providers
+      operationId: listProviders
+      responses:
+        '200':
+          description: Providers.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Provider'
+    post:
+      tags: [providers]
+      summary: Create a provider
+      operationId: createProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderInput'
+      responses:
+        '201':
+          description: Provider.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Provider'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /admin/v1/providers/{id}:
+    patch:
+      tags: [providers]
+      summary: Replace provider configuration
+      operationId: updateProvider
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderInput'
+      responses:
+        '200':
+          description: Updated provider.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Provider'
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [providers]
+      summary: Delete a provider
+      operationId: deleteProvider
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '204': {description: Deleted}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /admin/v1/providers/{id}/test:
+    post:
+      tags: [providers]
+      summary: Run a provider health check
+      operationId: testProvider
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Health check result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  provider: {type: string}
+                  latency_ms: {type: integer}
+                  error: {type: string}
+  /admin/v1/quotas:
+    get:
+      tags: [quotas]
+      summary: List quotas
+      operationId: listQuotas
+      parameters:
+        - name: tenant_id
+          in: query
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Quotas.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Quota'
+    post:
+      tags: [quotas]
+      summary: Upsert a tenant or key quota
+      operationId: upsertQuota
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuotaInput'
+      responses:
+        '200':
+          description: Quota.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Quota'
+  /admin/v1/quotas/{id}:
+    delete:
+      tags: [quotas]
+      summary: Delete a quota
+      operationId: deleteQuota
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '204': {description: Deleted}
+  /admin/v1/prices:
+    get:
+      tags: [prices]
+      summary: List model prices
+      operationId: listPrices
+      responses:
+        '200':
+          description: Prices.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ModelPrice'
+    post:
+      tags: [prices]
+      summary: Upsert model price
+      operationId: upsertPrice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelPriceInput'
+      responses:
+        '200':
+          description: Price.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelPrice'
+  /admin/v1/prices/{id}:
+    delete:
+      tags: [prices]
+      summary: Delete a model price
+      operationId: deletePrice
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '204': {description: Deleted}
+  /admin/v1/usage:
+    get:
+      tags: [usage]
+      summary: Query daily usage aggregates
+      operationId: adminUsage
+      parameters:
+        - name: from
+          in: query
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          schema: {type: string, format: date}
+        - name: tenant_id
+          in: query
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Daily aggregates.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UsageSummary'
+  /admin/v1/audit:
+    get:
+      tags: [usage]
+      summary: Query request audit metadata
+      operationId: adminAudit
+      parameters:
+        - name: tenant_id
+          in: query
+          schema: {type: string, format: uuid}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+        - name: offset
+          in: query
+          schema: {type: integer, minimum: 0, default: 0}
+      responses:
+        '200':
+          description: Audit records. Prompt and response content is never stored.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditRecord'
+  /admin/v1/cache/purge:
+    post:
+      tags: [cache]
+      summary: Purge exact and/or semantic caches
+      operationId: purgeCache
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tenant_id: {type: string, format: uuid}
+                model: {type: string}
+                exact: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Number of deleted entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  semantic_deleted: {type: integer}
+                  exact_deleted: {type: integer}
+components:
+  securitySchemes:
+    adminAuth:
+      type: http
+      scheme: bearer
+      description: Dedicated admin token.
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Missing or invalid admin token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          properties:
+            message: {type: string}
+            type: {type: string}
+            code: {type: string}
+    Tenant:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        created_at: {type: string, format: date-time}
+    APIKey:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        tenant_id: {type: string, format: uuid}
+        name: {type: string}
+        key_prefix: {type: string}
+        enabled: {type: boolean}
+        expires_at: {type: [string, 'null'], format: date-time}
+        last_used_at: {type: [string, 'null'], format: date-time}
+        created_at: {type: string, format: date-time}
+    APIKeyCreated:
+      allOf:
+        - $ref: '#/components/schemas/APIKey'
+        - type: object
+          properties:
+            key:
+              type: string
+              description: Plaintext key, returned only once.
+            warning: {type: string}
+    Provider:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        kind:
+          type: string
+          enum: [mock, ollama, openai_compatible]
+        base_url: {type: string}
+        api_key_env: {type: string}
+        models:
+          type: array
+          items: {type: string}
+        priority: {type: integer}
+        enabled: {type: boolean}
+        timeout_ms: {type: integer}
+        max_retries: {type: integer}
+        config: {type: object, additionalProperties: true}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    ProviderInput:
+      type: object
+      required: [name, kind, models]
+      properties:
+        name: {type: string}
+        kind:
+          type: string
+          enum: [mock, ollama, openai_compatible]
+        base_url: {type: string}
+        api_key_env: {type: string}
+        models:
+          type: array
+          items: {type: string}
+        priority: {type: integer}
+        enabled: {type: boolean}
+        timeout_ms: {type: integer}
+        max_retries: {type: integer}
+        config: {type: object, additionalProperties: true}
+    Quota:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        tenant_id: {type: string, format: uuid}
+        api_key_id: {type: [string, 'null'], format: uuid}
+        rpm: {type: [integer, 'null']}
+        tpm: {type: [integer, 'null']}
+        daily_requests: {type: [integer, 'null']}
+        daily_tokens: {type: [integer, 'null']}
+        monthly_cost_usd: {type: [number, 'null']}
+    QuotaInput:
+      type: object
+      required: [tenant_id]
+      properties:
+        tenant_id: {type: string, format: uuid}
+        api_key_id: {type: [string, 'null'], format: uuid}
+        rpm: {type: [integer, 'null']}
+        tpm: {type: [integer, 'null']}
+        daily_requests: {type: [integer, 'null']}
+        daily_tokens: {type: [integer, 'null']}
+        monthly_cost_usd: {type: [number, 'null']}
+    ModelPrice:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        provider: {type: string}
+        model: {type: string}
+        input_usd_per_1m: {type: number}
+        output_usd_per_1m: {type: number}
+    ModelPriceInput:
+      type: object
+      required: [provider, model]
+      properties:
+        provider: {type: string}
+        model: {type: string}
+        input_usd_per_1m: {type: number}
+        output_usd_per_1m: {type: number}
+    UsageSummary:
+      type: object
+      properties:
+        tenant_id: {type: string, format: uuid}
+        provider: {type: string}
+        model: {type: string}
+        day: {type: string, format: date}
+        requests: {type: integer}
+        prompt_tokens: {type: integer}
+        completion_tokens: {type: integer}
+        cost_usd: {type: number}
+    AuditRecord:
+      type: object
+      properties:
+        request_id: {type: string}
+        tenant_id: {type: string, format: uuid}
+        key_prefix: {type: string}
+        model: {type: string}
+        provider: {type: string}
+        stream: {type: boolean}
+        status: {type: integer}
+        cache: {type: string}
+        prompt_tokens: {type: integer}
+        completion_tokens: {type: integer}
+        cost_usd: {type: number}
+        latency_ms: {type: integer}
+        error_code: {type: string}
+        pii_redacted: {type: boolean}
+        created_at: {type: string, format: date-time}

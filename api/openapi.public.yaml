@@ -1,0 +1,394 @@
+openapi: 3.1.0
+info:
+  title: gogate public API
+  version: 1.0.0
+  description: |
+    OpenAI-compatible gateway for local and remote chat providers.
+    Authentication uses a gateway API key in the `Authorization: Bearer` header.
+    Streaming responses use Server-Sent Events (`text/event-stream`).
+servers:
+  - url: http://localhost:8080
+    description: Local gateway
+security:
+  - bearerAuth: []
+tags:
+  - name: chat
+  - name: models
+  - name: system
+paths:
+  /v1/chat/completions:
+    post:
+      tags: [chat]
+      summary: Create a chat completion
+      description: |
+        Creates a chat completion. Set `stream=true` to receive OpenAI-compatible
+        SSE chunks terminated by `data: [DONE]`. Retries, fallback and circuit
+        breaking are applied only before the first byte of a stream.
+      operationId: createChatCompletion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+            examples:
+              simple:
+                summary: Non-streaming request
+                value:
+                  model: mock
+                  messages:
+                    - role: user
+                      content: Hello from gogate
+                  temperature: 0.2
+                  max_tokens: 64
+              streaming:
+                summary: Streaming request with usage
+                value:
+                  model: mock
+                  messages:
+                    - role: user
+                      content: Stream this response
+                  stream: true
+                  stream_options:
+                    include_usage: true
+      responses:
+        '200':
+          description: A completion or an SSE stream.
+          headers:
+            X-Request-ID:
+              schema: {type: string}
+            X-Gogate-Provider:
+              schema: {type: string}
+            X-Gogate-Cache:
+              schema: {type: string, enum: [HIT, MISS, BYPASS, SEMANTIC]}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  SSE frames: `data: <ChatCompletionChunk>`, followed by
+                  `data: [DONE]`. Upstream errors after the first byte are sent
+                  as a final `data: {"error": {...}}` frame.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/UpstreamError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '504':
+          $ref: '#/components/responses/Timeout'
+  /v1/models:
+    get:
+      tags: [models]
+      summary: List available models
+      operationId: listModels
+      responses:
+        '200':
+          description: Models exposed by enabled providers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /healthz:
+    get:
+      tags: [system]
+      summary: Liveness probe
+      security: []
+      operationId: healthz
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /readyz:
+    get:
+      tags: [system]
+      summary: Readiness probe
+      security: []
+      operationId: readyz
+      parameters:
+        - name: verbose
+          in: query
+          schema: {type: string, enum: ['1']}
+      responses:
+        '200':
+          description: PostgreSQL and Redis are reachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: A dependency is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /metrics:
+    get:
+      tags: [system]
+      summary: Prometheus metrics
+      security: []
+      operationId: metrics
+      responses:
+        '200':
+          description: Prometheus exposition format.
+          content:
+            text/plain:
+              schema: {type: string}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Gateway API key.
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: Model not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    TooLarge:
+      description: Request body too large.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    RateLimited:
+      description: Rate limit or budget exceeded.
+      headers:
+        Retry-After:
+          schema: {type: integer}
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    UpstreamError:
+      description: All providers failed before the first byte.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unavailable:
+      description: All providers are unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Timeout:
+      description: Upstream first-byte timeout.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool, developer]
+        content:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                required: [type]
+                properties:
+                  type:
+                    type: string
+                    enum: [text, input_text]
+                  text:
+                    type: string
+        name:
+          type: string
+    ChatCompletionRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model:
+          type: string
+          maxLength: 128
+          example: mock
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+        n:
+          type: integer
+          enum: [1]
+        max_tokens:
+          type: integer
+          minimum: 1
+          maximum: 4096
+        max_completion_tokens:
+          type: integer
+          minimum: 1
+          maximum: 4096
+        stop:
+          oneOf:
+            - type: string
+            - type: array
+              maxItems: 4
+              items: {type: string}
+        seed:
+          type: integer
+        presence_penalty:
+          type: number
+          minimum: -2
+          maximum: 2
+        frequency_penalty:
+          type: number
+          minimum: -2
+          maximum: 2
+        stream:
+          type: boolean
+          default: false
+        stream_options:
+          type: object
+          properties:
+            include_usage:
+              type: boolean
+              default: false
+        user:
+          type: string
+    Usage:
+      type: object
+      properties:
+        prompt_tokens: {type: integer}
+        completion_tokens: {type: integer}
+        total_tokens: {type: integer}
+    ChatCompletionResponse:
+      type: object
+      required: [id, object, created, model, choices, usage]
+      properties:
+        id: {type: string}
+        object:
+          type: string
+          const: chat.completion
+        created: {type: integer}
+        model: {type: string}
+        choices:
+          type: array
+          items:
+            type: object
+            required: [index, message, finish_reason]
+            properties:
+              index: {type: integer}
+              message:
+                type: object
+                required: [role, content]
+                properties:
+                  role: {type: string}
+                  content: {type: string}
+              finish_reason:
+                type: string
+                enum: [stop, length, content_filter, tool_calls, function_call]
+        usage:
+          $ref: '#/components/schemas/Usage'
+    ChatCompletionChunk:
+      type: object
+      required: [id, object, created, model, choices]
+      properties:
+        id: {type: string}
+        object:
+          type: string
+          const: chat.completion.chunk
+        created: {type: integer}
+        model: {type: string}
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index: {type: integer}
+              delta:
+                type: object
+                properties:
+                  role: {type: string}
+                  content: {type: string}
+              finish_reason:
+                type: [string, 'null']
+        usage:
+          oneOf:
+            - $ref: '#/components/schemas/Usage'
+            - type: 'null'
+    Model:
+      type: object
+      properties:
+        id: {type: string}
+        object:
+          type: string
+          const: model
+        created: {type: integer}
+        owned_by: {type: string}
+    ModelList:
+      type: object
+      properties:
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Model'
+    Error:
+      type: object
+      properties:
+        message: {type: string}
+        type: {type: string}
+        param: {type: [string, 'null']}
+        code: {type: [string, 'null']}
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/Error'
+    Health:
+      type: object
+      properties:
+        status: {type: string}
+        version: {type: string}
+        components:
+          type: object
+          additionalProperties: true

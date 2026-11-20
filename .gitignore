@@ -1,0 +1,33 @@
+# Binaries
+bin/
+build/
+dist/
+gogate
+
+# Local configuration and secrets
+.env
+.env.local
+*.key
+*.pem
+secrets/
+demo-key.txt
+
+# Runtime
+data/
+tmp/
+*.log
+*.out
+coverage.out
+coverage.html
+
+# Tooling
+.golangci-lint/
+.pytest_cache/
+.node_modules/
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
