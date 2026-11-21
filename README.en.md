@@ -1,6 +1,17 @@
 # gogate
 
+[![CI](https://github.com/yugrinovD/gogate/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/yugrinovD/gogate/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/yugrinovD/gogate)](LICENSE)
+![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go)
+
 **An OpenAI-compatible gateway for LLM providers: local-first, mock by default, Ollama on demand, PostgreSQL and Redis on the hot path.**
+
+**Part of [AI Ops Stack](https://github.com/yugrinovD/ai-ops-stack):**
+[gogate](https://github.com/yugrinovD/gogate) ·
+[lmlog](https://github.com/yugrinovD/lmlog) ·
+[ops-console](https://github.com/yugrinovD/ops-console) ·
+[ledger](https://github.com/yugrinovD/ledger) ·
+[ai-ops-stack](https://github.com/yugrinovD/ai-ops-stack).
 
 [Русская версия](README.md)
 
@@ -103,7 +114,7 @@ retries, fallback, rate limits, cache, metrics and cost live here. `lmlog` and
 over the OpenAI-compatible API.
 
 > The `ai` profile (`llm` is an alias) is for standalone development only. Do
-> not run it together with the shared `infra/` stack: two Ollama containers mean
+> not run it together with the shared `ai-ops-stack/` stack: two Ollama containers mean
 > double RAM usage and a `11434` port conflict.
 
 ### Common targets

@@ -1,6 +1,17 @@
 # gogate
 
+[![CI](https://github.com/yugrinovD/gogate/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/yugrinovD/gogate/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/yugrinovD/gogate)](LICENSE)
+![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go)
+
 **OpenAI-совместимый шлюз к LLM-провайдерам: локальный запуск, mock из коробки, Ollama по требованию, PostgreSQL и Redis на горячем пути.**
+
+**Part of [AI Ops Stack](https://github.com/yugrinovD/ai-ops-stack):**
+[gogate](https://github.com/yugrinovD/gogate) ·
+[lmlog](https://github.com/yugrinovD/lmlog) ·
+[ops-console](https://github.com/yugrinovD/ops-console) ·
+[ledger](https://github.com/yugrinovD/ledger) ·
+[ai-ops-stack](https://github.com/yugrinovD/ai-ops-stack).
 
 [English version](README.en.md)
 
@@ -103,7 +114,7 @@ fallback, rate limit, кэш, метрики и стоимость живут з
 OpenAI-совместимому API.
 
 > Профиль `ai` (`llm` — алиас) предназначен только для standalone-разработки.
-> Не запускайте его одновременно с общим стеком `infra/`: два Ollama-контейнера
+> Не запускайте его одновременно с общим стеком `ai-ops-stack/`: два Ollama-контейнера
 > дают двойной расход RAM и конфликт порта `11434`.
 
 ### Полезные команды
