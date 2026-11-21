@@ -123,7 +123,8 @@ OpenAI-совместимому API.
 | `make down` / `make clean` | остановка стека / удаление артефактов |
 
 Host-порты можно переопределить в `.env`: `GOGATE_HTTP_PORT`, `GOGATE_ADMIN_PORT`,
-`GOGATE_PROM_PORT`, `GOGATE_GRAFANA_PORT`, `GOGATE_JAEGER_PORT` и другие.
+`GOGATE_PROM_PORT`, `GOGATE_GRAFANA_PORT`, `GOGATE_JAEGER_PORT` и другие. В
+локальном `docker-compose.yml` все host-порты привязаны к `127.0.0.1`.
 
 ---
 

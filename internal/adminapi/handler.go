@@ -100,10 +100,9 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	dbStatus := componentPing(ctx, h.store.Ping)
 	redisStatus := h.pingRedis(ctx)
-	code := http.StatusOK
-	if !boolField(dbStatus, "ok") || !boolField(redisStatus, "ok") {
-		code = http.StatusServiceUnavailable
-	}
+	redisRequired := h.cfg.RateLimitEnabled && !h.cfg.RateLimitFailOpen
+	redisStatus["required"] = redisRequired
+	code := healthCode(boolField(dbStatus, "ok"), boolField(redisStatus, "ok"), redisRequired)
 	status := map[string]any{
 		"version":   version.String(),
 		"database":  dbStatus,
@@ -128,6 +127,16 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 func boolField(m map[string]any, key string) bool {
 	v, _ := m[key].(bool)
 	return v
+}
+
+// healthCode reports readiness from the admin listener's point of view.
+// A Redis outage is fatal only when rate limiting fails closed; with
+// GOGATE_RATE_LIMIT_FAIL_OPEN=true the gateway keeps serving.
+func healthCode(dbOK, redisOK, redisRequired bool) int {
+	if !dbOK || (redisRequired && !redisOK) {
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusOK
 }
 
 func (h *Handler) pingRedis(ctx context.Context) map[string]any {
