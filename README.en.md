@@ -28,7 +28,7 @@ needs no external keys and starts in seconds, while `make load` exercises
 - **Observability**: Prometheus metrics, OTLP traces to Jaeger, JSON logs without prompts/responses or keys.
 - **PostgreSQL control plane**: tenants, keys, providers, quotas, prices, usage, audit.
 - **P2 features behind flags**: PII redaction, cost budgets, request audit, semantic cache.
-- **Docker Compose**: PostgreSQL 17 + pgvector, Redis 7, Prometheus, Grafana, Jaeger, mock upstream, k6 and an Ollama profile.
+- **Docker Compose**: PostgreSQL 17 + pgvector, Redis 7, Prometheus, Grafana, Jaeger, mock upstream, k6 and a standalone-dev `ai` Ollama profile.
 
 ---
 
@@ -88,13 +88,23 @@ make demo
 
 ```bash
 make demo-ollama     # starts Ollama, pulls qwen2.5:3b and sends a request
-# or just start the model:
-make llm
+# or just the standalone-dev profile:
+make ai-up
+make pull-model      # re-pull when the model is already present
 ```
 
 Ollama uses a separate volume and is optional for `make demo`. If
 `GOGATE_OLLAMA_BASE_URL` is set, `qwen2.5:3b` may be visible in `/v1/models`
-before Ollama starts; requests work after `make demo-ollama` / `make llm`.
+before Ollama starts; requests work after `make demo-ollama` / `make ai-up`.
+
+`gogate` is the single owner of the LLM integration: providers, timeouts,
+retries, fallback, rate limits, cache, metrics and cost live here. `lmlog` and
+`ops-console` never talk to Ollama; in the full stack `lmlog` calls `gogate`
+over the OpenAI-compatible API.
+
+> The `ai` profile (`llm` is an alias) is for standalone development only. Do
+> not run it together with the shared `infra/` stack: two Ollama containers mean
+> double RAM usage and a `11434` port conflict.
 
 ### Common targets
 
@@ -102,6 +112,8 @@ before Ollama starts; requests work after `make demo-ollama` / `make llm`.
 | --- | --- |
 | `make demo` | mock-only demo + observability stack |
 | `make demo-ollama` | demo + Ollama + `qwen2.5:3b` |
+| `make ai-up` | standalone-dev Ollama profile + pinned model pull |
+| `make pull-model` | pull the pinned model into the running Ollama |
 | `make load` | k6: 500 RPS by default, report in `build/k6-summary.json` |
 | `make test` / `make test-race` | unit tests |
 | `make test-integration` | testcontainers: PostgreSQL + Redis |
@@ -219,7 +231,9 @@ Separate port, separate Bearer token, `/admin/v1` prefix.
 - `GET/POST/PATCH/DELETE /providers`, `POST /providers/{id}/test`
 - `GET/POST/DELETE /quotas`
 - `GET/POST/DELETE /prices`
-- `GET /usage`, `GET /audit`
+- `GET /usage`, `GET /usage/keys` — daily aggregates by tenant/provider/model or by API key
+- `GET /audit` — request metadata with `trace_id` and server-side filters
+  (`tenant_id`, `model`, `status`, `cache`, `q`, `from`, `to`)
 - `POST /cache/purge`
 - `GET /health`, `GET /config`, `POST /reload`
 

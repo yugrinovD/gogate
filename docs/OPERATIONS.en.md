@@ -92,7 +92,7 @@ registered even before the container starts. `qwen2.5:3b` is then visible in
 If the provider row is absent (for example, bootstrap was skipped with
 `GOGATE_ALLOW_PRIVATE_UPSTREAMS=false`), create it through the admin API;
 `POST /reload` does not insert new rows. `make demo` does not guarantee a working
-`qwen2.5:3b`; use `make demo-ollama` or `make llm`.
+`qwen2.5:3b`; use `make demo-ollama` or `make ai-up`.
 
 ## Pricing and budgets
 
@@ -178,4 +178,6 @@ rm .env            # then make init-env
 - `GOGATE_MAX_API_KEY_BYTES` must be at least the generated key length for your
   `GOGATE_ENV`; for `dev` it is 84 bytes, a safe minimum is 128.
 - With `GOGATE_OLLAMA_BASE_URL`, a model may be visible in `/v1/models` before
-  Ollama starts; requests work after `make llm`/`make demo-ollama`.
+  Ollama starts; requests work after `make ai-up`/`make demo-ollama`. The `ai`
+  profile is standalone development only; in the full stack Ollama is started by
+  `infra/`.

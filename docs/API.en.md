@@ -117,7 +117,8 @@ Authentication: `Authorization: Bearer $GOGATE_ADMIN_TOKEN`.
 | GET/POST | `/admin/v1/prices` | list/upsert prices |
 | DELETE | `/admin/v1/prices/{id}` | delete price |
 | GET | `/admin/v1/usage` | daily aggregates |
-| GET | `/admin/v1/audit` | audit without prompt/response |
+| GET | `/admin/v1/usage/keys` | daily aggregates grouped by API key |
+| GET | `/admin/v1/audit` | audit without prompt/response; includes `trace_id` and `model/status/cache/q/from/to` filters |
 | POST | `/admin/v1/cache/purge` | purge semantic/exact cache; requires `semantic=true` and/or `exact=true`; exact purge is global |
 
 ### Create a key

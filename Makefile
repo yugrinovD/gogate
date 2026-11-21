@@ -4,8 +4,8 @@ GO ?= go
 MODEL ?= qwen2.5:3b
 
 .PHONY: help init-env build run fmt tidy test test-race test-integration bench \
-        lint vuln secrets openapi-lint compose-up compose-down demo demo-ollama llm \
-        load demo-gif clean down
+        lint vuln secrets openapi-lint compose-up compose-down demo demo-ollama \
+        ai-up ai-down pull-model llm llm-down load demo-gif clean down
 
 help:
 	@echo "gogate targets"
@@ -20,7 +20,8 @@ help:
 	@echo "  make secrets           gitleaks scan"
 	@echo "  make demo              start mock-only demo and run curl examples"
 	@echo "  make demo-ollama       start Ollama, pull $(MODEL) and show an example"
-	@echo "  make llm               start Ollama and pull $(MODEL) only"
+	@echo "  make ai-up             start the standalone-dev Ollama profile"
+	@echo "  make pull-model        pull $(MODEL) into the running Ollama"
 	@echo "  make load              run k6 load test and write build/k6-summary.json"
 	@echo "  make demo-gif          record docs/demo.gif with VHS (optional tooling)"
 	@echo "  make compose-up        start the full observability stack"
@@ -78,11 +79,20 @@ demo: init-env
 demo-ollama: init-env
 	./scripts/demo.sh --ollama
 
-llm: init-env
-	$(COMPOSE) --profile llm up -d ollama
-	@echo "Waiting for Ollama..."
-	@for i in $$(seq 1 60); do $(COMPOSE) exec -T ollama ollama list >/dev/null 2>&1 && break; sleep 2; done
-	$(COMPOSE) exec -T ollama ollama pull $(MODEL)
+# Standalone development only. Do not run together with the full infra stack.
+ai-up: init-env
+	$(COMPOSE) --profile ai up -d ollama
+	$(COMPOSE) --profile ai run --rm ollama-pull
+
+ai-down: init-env
+	$(COMPOSE) --profile ai stop ollama
+
+pull-model: init-env
+	$(COMPOSE) --profile ai run --rm ollama-pull
+
+# Backward-compatible aliases.
+llm: ai-up
+llm-down: ai-down
 
 load: init-env
 	./scripts/load.sh
@@ -91,10 +101,10 @@ demo-gif:
 	./scripts/demo-gif.sh
 
 down:
-	$(COMPOSE) --profile llm --profile load down --remove-orphans
+	$(COMPOSE) --profile ai --profile llm --profile load down --remove-orphans
 
 compose-down: down
 
 clean:
-	$(COMPOSE) --profile llm --profile load down -v --remove-orphans
+	$(COMPOSE) --profile ai --profile llm --profile load down -v --remove-orphans
 	rm -rf bin build coverage.out coverage.html data

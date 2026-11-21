@@ -93,7 +93,7 @@ reload), поэтому отзыв ключа применяется на все
 запущена. Если строки провайдера вообще не было (например, bootstrap пропущен
 при `GOGATE_ALLOW_PRIVATE_UPSTREAMS=false`), создайте её через admin API:
 `POST /reload` не добавляет новые строки. `make demo` не гарантирует работу
-`qwen2.5:3b`; для неё используйте `make demo-ollama` или `make llm`.
+`qwen2.5:3b`; для неё используйте `make demo-ollama` или `make ai-up`.
 
 ## Цены и бюджеты
 
@@ -181,4 +181,6 @@ rm .env            # затем make init-env
 - `GOGATE_MAX_API_KEY_BYTES` должен быть не меньше минимальной длины ключа для
   вашего `GOGATE_ENV`; при `dev` это 84 байта, безопасный минимум — 128.
 - При `GOGATE_OLLAMA_BASE_URL` модель может быть видна в `/v1/models` до
-  запуска Ollama; запросы начнут работать после `make llm`/`make demo-ollama`.
+  запуска Ollama; запросы начнут работать после `make ai-up`/`make demo-ollama`.
+  Профиль `ai` предназначен только для standalone-разработки; в полном стеке
+  Ollama поднимает `infra/`.

@@ -86,6 +86,7 @@ type AuditRecord struct {
 	RequestID        string    `json:"request_id"`
 	TenantID         string    `json:"tenant_id"`
 	KeyPrefix        string    `json:"key_prefix"`
+	TraceID          string    `json:"trace_id,omitempty"`
 	Model            string    `json:"model"`
 	Provider         string    `json:"provider"`
 	Stream           bool      `json:"stream"`
@@ -120,6 +121,16 @@ type UsageSummary struct {
 	Provider         string  `json:"provider"`
 	Model            string  `json:"model"`
 	Day              string  `json:"day"`
+	Requests         int64   `json:"requests"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	CostUSD          float64 `json:"cost_usd"`
+}
+
+// KeyUsageSummary aggregates daily usage for one API key over a date range.
+type KeyUsageSummary struct {
+	APIKeyID         string  `json:"api_key_id"`
+	TenantID         string  `json:"tenant_id"`
 	Requests         int64   `json:"requests"`
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`

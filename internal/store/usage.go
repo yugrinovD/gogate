@@ -61,10 +61,10 @@ func (s *Store) InsertAudit(ctx context.Context, records []AuditRecord) error {
 	batch := &pgx.Batch{}
 	for _, r := range records {
 		batch.Queue(`
-			INSERT INTO request_audit(request_id, tenant_id, key_prefix, model, provider, stream, status, cache,
+			INSERT INTO request_audit(request_id, tenant_id, key_prefix, trace_id, model, provider, stream, status, cache,
 				prompt_tokens, completion_tokens, cost_usd, latency_ms, error_code, pii_redacted)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-			r.RequestID, r.TenantID, r.KeyPrefix, r.Model, r.Provider, r.Stream, r.Status, r.Cache,
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+			r.RequestID, r.TenantID, r.KeyPrefix, r.TraceID, r.Model, r.Provider, r.Stream, r.Status, r.Cache,
 			r.PromptTokens, r.CompletionTokens, r.CostUSD, r.LatencyMS, r.ErrorCode, r.PIIRedacted)
 	}
 	br := tx.SendBatch(ctx, batch)

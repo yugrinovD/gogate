@@ -101,7 +101,7 @@ done
 if [[ "${OLLAMA}" == "1" ]]; then
   echo
   echo "==> starting Ollama and pulling ${OLLAMA_MODEL:-qwen2.5:3b}"
-  docker compose --profile llm up -d ollama
+  docker compose --profile ai up -d ollama
   for _ in $(seq 1 60); do
     if docker compose exec -T ollama ollama list >/dev/null 2>&1; then
       break
@@ -114,7 +114,7 @@ if [[ "${OLLAMA}" == "1" ]]; then
   echo "==> Ollama chat"
   curl -fsS -X POST "${PUBLIC}/v1/chat/completions" \
     -H "Authorization: Bearer ${API_KEY}" -H "${JSON}" \
-    -d '{"model":"qwen2.5:3b","messages":[{"role":"user","content":"Say hello in one short sentence."}],"max_tokens":64}' \
+    -d "{\"model\":\"${OLLAMA_MODEL:-qwen2.5:3b}\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello in one short sentence.\"}],\"max_tokens\":64}" \
     | jq '{model, choices, usage}'
 fi
 

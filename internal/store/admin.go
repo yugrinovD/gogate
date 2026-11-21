@@ -364,17 +364,72 @@ func (s *Store) Usage(ctx context.Context, from, to time.Time, tenantID string) 
 	return out, rows.Err()
 }
 
+// AuditFilter narrows an audit query. Zero values mean "no filter".
+type AuditFilter struct {
+	TenantID string
+	Model    string
+	Cache    string
+	Query    string
+	Status   int
+	From     *time.Time
+	To       *time.Time
+	Limit    int
+	Offset   int
+}
+
 // ListAudit returns audit records newest first.
-func (s *Store) ListAudit(ctx context.Context, tenantID string, limit, offset int) ([]AuditRecord, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
+func (s *Store) ListAudit(ctx context.Context, f AuditFilter) ([]AuditRecord, error) {
+	if f.Limit <= 0 || f.Limit > 500 {
+		f.Limit = 100
 	}
-	rows, err := s.Pool.Query(ctx, `
-		SELECT request_id, tenant_id::text, key_prefix, model, provider, stream, status, cache,
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+
+	where := make([]string, 0, 6)
+	args := make([]any, 0, 10)
+	add := func(clause string, value any) {
+		args = append(args, value)
+		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+	if f.TenantID != "" {
+		add("tenant_id::text = $%d", f.TenantID)
+	}
+	if f.Model != "" {
+		add("model = $%d", f.Model)
+	}
+	if f.Cache != "" {
+		add("cache = $%d", strings.ToUpper(f.Cache))
+	}
+	if f.Status != 0 {
+		add("status = $%d", f.Status)
+	}
+	if f.Query != "" {
+		args = append(args, "%"+f.Query+"%")
+		n := len(args)
+		where = append(where, fmt.Sprintf(
+			"(request_id ILIKE $%d OR key_prefix ILIKE $%d)", n, n))
+	}
+	if f.From != nil {
+		add("created_at >= $%d", *f.From)
+	}
+	if f.To != nil {
+		add("created_at < $%d", *f.To)
+	}
+	args = append(args, f.Limit, f.Offset)
+	limitPlaceholder := len(args) - 1
+	offsetPlaceholder := len(args)
+
+	query := `
+		SELECT request_id, tenant_id::text, key_prefix, trace_id, model, provider, stream, status, cache,
 		       prompt_tokens, completion_tokens, cost_usd::float8, latency_ms, error_code, pii_redacted, created_at
-		FROM request_audit
-		WHERE ($1 = '' OR tenant_id::text = $1)
-		ORDER BY created_at DESC LIMIT $2 OFFSET $3`, tenantID, limit, offset)
+		FROM request_audit`
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", limitPlaceholder, offsetPlaceholder)
+
+	rows, err := s.Pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -382,11 +437,35 @@ func (s *Store) ListAudit(ctx context.Context, tenantID string, limit, offset in
 	var out []AuditRecord
 	for rows.Next() {
 		var a AuditRecord
-		if err := rows.Scan(&a.RequestID, &a.TenantID, &a.KeyPrefix, &a.Model, &a.Provider, &a.Stream, &a.Status, &a.Cache,
+		if err := rows.Scan(&a.RequestID, &a.TenantID, &a.KeyPrefix, &a.TraceID, &a.Model, &a.Provider, &a.Stream, &a.Status, &a.Cache,
 			&a.PromptTokens, &a.CompletionTokens, &a.CostUSD, &a.LatencyMS, &a.ErrorCode, &a.PIIRedacted, &a.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// UsageByKey aggregates usage per API key for a date range.
+func (s *Store) UsageByKey(ctx context.Context, from, to time.Time, tenantID string) ([]KeyUsageSummary, error) {
+	rows, err := s.Pool.Query(ctx, `
+		SELECT api_key_id::text, tenant_id::text,
+		       SUM(requests), SUM(prompt_tokens), SUM(completion_tokens), SUM(cost_usd)::float8
+		FROM usage_daily
+		WHERE day >= $1::date AND day <= $2::date AND ($3 = '' OR tenant_id::text = $3)
+		GROUP BY api_key_id, tenant_id
+		ORDER BY tenant_id, api_key_id`, from, to, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []KeyUsageSummary
+	for rows.Next() {
+		var u KeyUsageSummary
+		if err := rows.Scan(&u.APIKeyID, &u.TenantID, &u.Requests, &u.PromptTokens, &u.CompletionTokens, &u.CostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
 	}
 	return out, rows.Err()
 }

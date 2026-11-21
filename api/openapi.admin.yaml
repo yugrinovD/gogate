@@ -366,6 +366,30 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/UsageSummary'
+  /admin/v1/usage/keys:
+    get:
+      tags: [usage]
+      summary: Query daily usage aggregates grouped by API key
+      operationId: adminUsageByKey
+      parameters:
+        - name: from
+          in: query
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          schema: {type: string, format: date}
+        - name: tenant_id
+          in: query
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Daily aggregates per API key.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/KeyUsageSummary'
   /admin/v1/audit:
     get:
       tags: [usage]
@@ -375,6 +399,27 @@ paths:
         - name: tenant_id
           in: query
           schema: {type: string, format: uuid}
+        - name: model
+          in: query
+          schema: {type: string, maxLength: 128}
+        - name: status
+          in: query
+          schema: {type: integer, minimum: 100, maximum: 599}
+        - name: cache
+          in: query
+          schema: {type: string, maxLength: 32}
+        - name: q
+          in: query
+          description: Case-insensitive substring match on request_id or key_prefix.
+          schema: {type: string, maxLength: 200}
+        - name: from
+          in: query
+          description: RFC3339 timestamp or YYYY-MM-DD.
+          schema: {type: string}
+        - name: to
+          in: query
+          description: RFC3339 timestamp or YYYY-MM-DD; date-only is inclusive.
+          schema: {type: string}
         - name: limit
           in: query
           schema: {type: integer, minimum: 1, maximum: 500, default: 100}
@@ -596,12 +641,24 @@ components:
         prompt_tokens: {type: integer}
         completion_tokens: {type: integer}
         cost_usd: {type: number}
+    KeyUsageSummary:
+      type: object
+      properties:
+        api_key_id: {type: string, format: uuid}
+        tenant_id: {type: string, format: uuid}
+        requests: {type: integer}
+        prompt_tokens: {type: integer}
+        completion_tokens: {type: integer}
+        cost_usd: {type: number}
     AuditRecord:
       type: object
       properties:
         request_id: {type: string}
         tenant_id: {type: string, format: uuid}
         key_prefix: {type: string}
+        trace_id:
+          type: string
+          description: OTel trace id when tracing is enabled; empty otherwise.
         model: {type: string}
         provider: {type: string}
         stream: {type: boolean}

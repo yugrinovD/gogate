@@ -117,7 +117,8 @@ data: [DONE]
 | GET/POST | `/admin/v1/prices` | список/upsert цен |
 | DELETE | `/admin/v1/prices/{id}` | удалить цену |
 | GET | `/admin/v1/usage` | дневная агрегация |
-| GET | `/admin/v1/audit` | аудит без prompt/response |
+| GET | `/admin/v1/usage/keys` | дневная агрегация по API-ключам |
+| GET | `/admin/v1/audit` | аудит без prompt/response; `trace_id` и фильтры `model/status/cache/q/from/to` |
 | POST | `/admin/v1/cache/purge` | очистка semantic/exact кэша; требуется `semantic=true` и/или `exact=true`; exact purge глобальный |
 
 ### Создание ключа

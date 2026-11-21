@@ -101,12 +101,18 @@ services:
     depends_on:
       - gogate
 
+  # Standalone development LLM profile. Full-stack deployments use infra/.
+  # Do not run this profile together with the full stack: two Ollama
+  # containers mean two model volumes and double the RAM usage.
   ollama:
     image: ollama/ollama:0.40.16@sha256:910d0d8107b538fb0894e63163eb195de0cc7aefcbc666dc62d3b18f71124592
-    profiles: ["llm"]
+    profiles: ["ai", "llm"]
     restart: unless-stopped
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
     ports:
-      - "${GOGATE_OLLAMA_PORT:-11434}:11434"
+      - "127.0.0.1:${GOGATE_OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama:/root/.ollama
     healthcheck:
@@ -114,6 +120,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
+
+  # One-shot model pull. The model is never baked into the image.
+  ollama-pull:
+    image: ollama/ollama:0.40.16@sha256:910d0d8107b538fb0894e63163eb195de0cc7aefcbc666dc62d3b18f71124592
+    profiles: ["ai", "llm"]
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "${OLLAMA_MODEL:-qwen2.5:3b}"]
+    volumes:
+      - ollama:/root/.ollama
 
   mock-upstream:
     image: gogate:local

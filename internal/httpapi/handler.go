@@ -21,6 +21,7 @@ import (
 	"github.com/yugrinovD/gogate/internal/store"
 	"github.com/yugrinovD/gogate/internal/tokenest"
 	"github.com/yugrinovD/gogate/internal/usage"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Handler serves the public API.
@@ -173,6 +174,10 @@ type outcome struct {
 
 func (h *Handler) finish(r *http.Request, o outcome) {
 	id, _ := reqctx.IdentityFrom(r.Context())
+	traceID := ""
+	if spanContext := trace.SpanFromContext(r.Context()).SpanContext(); spanContext.IsValid() {
+		traceID = spanContext.TraceID().String()
+	}
 	if h.metrics != nil {
 		h.metrics.IncRequest(o.Provider, o.Model, o.Status)
 		h.metrics.ObserveDuration(o.Provider, o.Model, o.Stream, o.Latency)
@@ -200,6 +205,7 @@ func (h *Handler) finish(r *http.Request, o outcome) {
 				RequestID:        reqctx.RequestID(r.Context()),
 				TenantID:         id.TenantID,
 				KeyPrefix:        id.KeyPrefix,
+				TraceID:          traceID,
 				Model:            o.Model,
 				Provider:         o.Provider,
 				Stream:           o.Stream,

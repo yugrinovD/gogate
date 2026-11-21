@@ -90,6 +90,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /admin/v1/prices/{id}", h.deletePrice)
 
 	mux.HandleFunc("GET /admin/v1/usage", h.usage)
+	mux.HandleFunc("GET /admin/v1/usage/keys", h.usageByKey)
 	mux.HandleFunc("GET /admin/v1/audit", h.audit)
 	mux.HandleFunc("POST /admin/v1/cache/purge", h.purgeCache)
 }
@@ -628,7 +629,27 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
+	to, err := parseDate(r.URL.Query().Get("to"), time.Now().UTC())
+	if err != nil {
+		apierr.BadRequest(w, r, "invalid_date", "to must be YYYY-MM-DD")
+		return
+	}
+	from, err := parseDate(r.URL.Query().Get("from"), to.AddDate(0, 0, -7))
+	if err != nil {
+		apierr.BadRequest(w, r, "invalid_date", "from must be YYYY-MM-DD")
+		return
+	}
+	items, err := h.store.UsageByKey(r.Context(), from, to, r.URL.Query().Get("tenant_id"))
+	if err != nil {
+		apierr.Internal(w, r, "usage query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 func (h *Handler) audit(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
 	limit, err := intQuery(r, "limit", 100, 1, 500)
 	if err != nil {
 		apierr.BadRequest(w, r, "invalid_limit", err.Error())
@@ -639,12 +660,71 @@ func (h *Handler) audit(w http.ResponseWriter, r *http.Request) {
 		apierr.BadRequest(w, r, "invalid_offset", err.Error())
 		return
 	}
-	items, err := h.store.ListAudit(r.Context(), r.URL.Query().Get("tenant_id"), limit, offset)
+	status := 0
+	if raw := q.Get("status"); raw != "" {
+		status, err = strconv.Atoi(raw)
+		if err != nil || status < 100 || status > 599 {
+			apierr.BadRequest(w, r, "invalid_status", "status must be between 100 and 599")
+			return
+		}
+	}
+	from, err := parseTimeQuery(q.Get("from"), false)
+	if err != nil {
+		apierr.BadRequest(w, r, "invalid_from", "from must be RFC3339 or YYYY-MM-DD")
+		return
+	}
+	to, err := parseTimeQuery(q.Get("to"), true)
+	if err != nil {
+		apierr.BadRequest(w, r, "invalid_to", "to must be RFC3339 or YYYY-MM-DD")
+		return
+	}
+	model := strings.TrimSpace(q.Get("model"))
+	cache := strings.TrimSpace(q.Get("cache"))
+	search := strings.TrimSpace(q.Get("q"))
+	if len(model) > 128 || len(cache) > 32 || len(search) > 200 {
+		apierr.BadRequest(w, r, "invalid_filter", "filter value is too long")
+		return
+	}
+	items, err := h.store.ListAudit(r.Context(), store.AuditFilter{
+		TenantID: q.Get("tenant_id"),
+		Model:    model,
+		Cache:    cache,
+		Query:    search,
+		Status:   status,
+		From:     from,
+		To:       to,
+		Limit:    limit,
+		Offset:   offset,
+	})
 	if err != nil {
 		apierr.Internal(w, r, "audit query failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+// parseTimeQuery accepts RFC3339 or a calendar date. Date-only upper bounds
+// are inclusive, so "to" is shifted to the next midnight.
+func parseTimeQuery(raw string, endOfDay bool) (*time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var t time.Time
+	var err error
+	if strings.ContainsAny(raw, "Tt:") {
+		t, err = time.Parse(time.RFC3339, raw)
+	} else {
+		t, err = time.Parse("2006-01-02", raw)
+		if err == nil && endOfDay {
+			t = t.AddDate(0, 0, 1)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	utc := t.UTC()
+	return &utc, nil
 }
 
 func (h *Handler) purgeCache(w http.ResponseWriter, r *http.Request) {

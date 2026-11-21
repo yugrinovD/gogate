@@ -27,7 +27,7 @@ mock-провайдере.
 - **Наблюдаемость**: Prometheus-метрики, OTLP-трейсы в Jaeger, JSON-логи без prompt/response и без ключей.
 - **Control plane в PostgreSQL**: тенанты, ключи, провайдеры, квоты, цены, usage, audit.
 - **P2-фичи под флагами**: PII-redaction, cost budgets, audit запросов, semantic cache.
-- **Docker Compose**: PostgreSQL 17 + pgvector, Redis 7, Prometheus, Grafana, Jaeger, mock-upstream, k6 и профиль Ollama.
+- **Docker Compose**: PostgreSQL 17 + pgvector, Redis 7, Prometheus, Grafana, Jaeger, mock-upstream, k6 и standalone-dev профиль `ai` с Ollama.
 
 ---
 
@@ -87,14 +87,24 @@ make demo
 
 ```bash
 make demo-ollama     # поднимет Ollama, скачает qwen2.5:3b и сделает запрос
-# или только запуск модели:
-make llm
+# или только standalone-dev профиль:
+make ai-up
+make pull-model      # повторный pull, если модель уже есть
 ```
 
 Ollama использует отдельный volume и не обязателен для `make demo`. Если
 `GOGATE_OLLAMA_BASE_URL` задан, модель `qwen2.5:3b` может быть видна в
 `/v1/models` до запуска Ollama; запросы к ней начнут работать после
-`make demo-ollama` / `make llm`.
+`make demo-ollama` / `make ai-up`.
+
+`gogate` — единственный владелец LLM-интеграции: провайдеры, таймауты, retry,
+fallback, rate limit, кэш, метрики и стоимость живут здесь. `lmlog` и
+`ops-console` не ходят в Ollama; в полном стеке `lmlog` вызывает `gogate` по
+OpenAI-совместимому API.
+
+> Профиль `ai` (`llm` — алиас) предназначен только для standalone-разработки.
+> Не запускайте его одновременно с общим стеком `infra/`: два Ollama-контейнера
+> дают двойной расход RAM и конфликт порта `11434`.
 
 ### Полезные команды
 
@@ -102,6 +112,8 @@ Ollama использует отдельный volume и не обязателе
 | --- | --- |
 | `make demo` | mock-only demo + инфраструктура |
 | `make demo-ollama` | demo + Ollama + `qwen2.5:3b` |
+| `make ai-up` | standalone-dev Ollama profile + pinned model pull |
+| `make pull-model` | pull the pinned model into the running Ollama |
 | `make load` | k6: 500 RPS по умолчанию, отчёт в `build/k6-summary.json` |
 | `make test` / `make test-race` | unit-тесты |
 | `make test-integration` | testcontainers: PostgreSQL + Redis |
@@ -220,7 +232,9 @@ OpenAPI 3.1 (English): [public](api/openapi.public.yaml) · [admin](api/openapi.
 - `GET/POST/PATCH/DELETE /providers`, `POST /providers/{id}/test`
 - `GET/POST/DELETE /quotas`
 - `GET/POST/DELETE /prices`
-- `GET /usage`, `GET /audit`
+- `GET /usage`, `GET /usage/keys` — daily aggregates by tenant/provider/model or by API key
+- `GET /audit` — request metadata, including `trace_id` and server-side filters
+  (`tenant_id`, `model`, `status`, `cache`, `q`, `from`, `to`)
 - `POST /cache/purge`
 - `GET /health`, `GET /config`, `POST /reload`
 

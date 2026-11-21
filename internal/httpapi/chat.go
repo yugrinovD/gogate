@@ -64,7 +64,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		h.finish(r, outcome{Model: req.Model, Status: http.StatusBadRequest, Latency: time.Since(start), ErrorCode: errCode})
 		return
 	}
-	span.SetAttributes(attribute.String("model", req.Model), attribute.Bool("stream", req.Stream), attribute.String("tenant_id", id.TenantID))
+	span.SetAttributes(
+		attribute.String("model", req.Model),
+		attribute.Bool("stream", req.Stream),
+		attribute.String("tenant_id", id.TenantID),
+		attribute.String("request_id", reqctx.RequestID(ctx)),
+	)
 	messages, err := parseMessages(req.Messages)
 	if err != nil {
 		apierr.BadRequest(w, r, "invalid_messages", err.Error())
