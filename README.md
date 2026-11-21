@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/yugrinovD/gogate/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/yugrinovD/gogate/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/yugrinovD/gogate)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/yugrinovD/gogate?sort=semver)](https://github.com/yugrinovD/gogate/releases)
 ![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go)
 
 **OpenAI-совместимый шлюз к LLM-провайдерам: локальный запуск, mock из коробки, Ollama по требованию, PostgreSQL и Redis на горячем пути.**
@@ -13,7 +14,7 @@
 [ledger](https://github.com/yugrinovD/ledger) ·
 [ai-ops-stack](https://github.com/yugrinovD/ai-ops-stack).
 
-[English version](README.en.md)
+[English version](README.en.md) · [Changelog](CHANGELOG.md)
 
 `gogate` предоставляет единый OpenAI-совместимый API (`/v1/chat/completions`,
 `/v1/models`) поверх разных провайдеров: встроенного mock, Ollama и любого
